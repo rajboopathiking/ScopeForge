@@ -10,9 +10,13 @@
     "test:e2e": "vitest run --project e2e",
     "lint": "tsc --noEmit -p tsconfig.json",
     "terminal": "pnpm --filter @scopeforge/terminal start",
-    "setup": "pnpm install --frozen-lockfile && uv sync --python 3.12 --all-extras --all-packages && pnpm generate:protocol",
+    "bootstrap": "pnpm install --frozen-lockfile && uv sync --python 3.12 --all-extras --all-packages && pnpm generate:protocol",
     "quickstart": "node scripts/quickstart.mjs",
-    "tui": "pnpm dlx -y tsx apps/terminal/src/index.ts tui"
+    "tui": "pnpm dlx -y tsx apps/terminal/src/index.ts tui",
+    "scopeforge": "pnpm dlx -y tsx apps/terminal/src/index.ts"
+  },
+  "bin": {
+    "scopeforge": "./scripts/scopeforge.js"
   },
   "devDependencies": {
     "@types/node": "^22.20.3",
