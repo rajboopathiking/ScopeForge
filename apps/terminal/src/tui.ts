@@ -238,7 +238,7 @@ export async function runTui(opts: TuiOptions): Promise<number> {
     if (replay.events.length > 0) {
       opts.err(`resumed ${replay.events.length} journaled events (maxSeq=${replay.maxSeq})`);
     }
-    const streamCount = opts.streamCount ?? 300;
+    const streamCount = Math.min(opts.streamCount ?? 50, 500);
     let live: RpcEvent[] = [];
     let resolveStream: () => void = () => {};
     const done = new Promise<void>((res) => { resolveStream = res; });
