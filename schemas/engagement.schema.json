@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scopeforge.dev/schemas/engagement.json",
+  "title": "Engagement (plan.md §6.1)",
+  "type": "object",
+  "required": ["program_name", "policy_source", "mode", "authorization_basis", "included_assets"],
+  "properties": {
+    "program_name": { "type": "string", "minLength": 1 },
+    "policy_source": { "type": "string" },
+    "policy_retrieved_at": { "type": "string", "format": "date-time" },
+    "policy_effective_date": { "type": "string" },
+    "user_intent": { "type": "string" },
+    "mode": { "enum": ["plan", "artifacts", "live"] },
+    "authorization_basis": { "type": "string", "minLength": 1 },
+    "included_assets": { "type": "array", "items": { "type": "string" } },
+    "exclusions": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "permitted_methods": { "type": "array", "items": { "type": "string" }, "default": ["GET", "HEAD"] },
+    "prohibited_methods": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "rate_limits": { "type": "object" },
+    "request_budget": { "type": ["integer", "null"], "minimum": 0 },
+    "testing_window": { "type": ["string", "null"] },
+    "unresolved_questions": { "type": "array", "items": { "type": "string" }, "default": [] }
+  }
+}

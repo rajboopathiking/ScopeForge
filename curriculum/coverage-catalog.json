@@ -1,0 +1,39 @@
+{"version": "0.1.0", "categories": [
+{"id": "T01", "checks": [
+{"check_id": "T01.1", "title": "Login, recovery, and step-up flows bind identity correctly"},
+{"check_id": "T01.2", "title": "Account linking cannot merge attacker and victim identities"}]},
+{"id": "T02", "checks": [
+{"check_id": "T02.1", "title": "Object-level authorization enforced per actor and tenant"},
+{"check_id": "T02.2", "title": "Tenant boundary holds across list, search, and export"},
+{"check_id": "T02.3", "title": "Role changes and invitations cannot escalate privilege"}]},
+{"id": "T03", "checks": [
+{"check_id": "T03.1", "title": "Session tokens have bounded purpose and lifecycle"},
+{"check_id": "T03.2", "title": "Logout and rotation invalidate prior tokens"}]},
+{"id": "T04", "checks": [
+{"check_id": "T04.1", "title": "Server-enforced state transitions cannot be skipped"},
+{"check_id": "T04.2", "title": "Quantity, price, and quota invariants hold server-side"}]},
+{"id": "T05", "checks": [
+{"check_id": "T05.1", "title": "Equivalent rules across methods, versions, and protocols"},
+{"check_id": "T05.2", "title": "Schema enforcement matches on REST, GraphQL, and RPC surfaces"}]},
+{"id": "T06", "checks": [
+{"check_id": "T06.1", "title": "User input cannot reach executable sinks unescaped"},
+{"check_id": "T06.2", "title": "PostMessage and frame communication validate origin and shape"}]},
+{"id": "T07", "checks": [
+{"check_id": "T07.1", "title": "OAuth/OIDC callbacks bind state, nonce, and redirect"},
+{"check_id": "T07.2", "title": "Webhooks verify signatures and reject replays"}]},
+{"id": "T08", "checks": [
+{"check_id": "T08.1", "title": "Server-side parsers treat input as data (SQL/template/command)"},
+{"check_id": "T08.2", "title": "Expression and formula evaluation is sandboxed or absent"}]},
+{"id": "T09", "checks": [
+{"check_id": "T09.1", "title": "File upload, path, and archive handling stays bounded"},
+{"check_id": "T09.2", "title": "Server-side fetch (SSRF) cannot reach internal targets"}]},
+{"id": "T10", "checks": [
+{"check_id": "T10.1", "title": "Exposed endpoints and debug surfaces are intended and gated"},
+{"check_id": "T10.2", "title": "Error and version disclosure stays minimal"}]},
+{"id": "T11", "checks": [
+{"check_id": "T11.1", "title": "Cache layers isolate tenants and authenticated content"},
+{"check_id": "T11.2", "title": "Method and header handling agrees across proxies"}]},
+{"id": "T12", "checks": [
+{"check_id": "T12.1", "title": "Sensitive data encrypted in transit and at rest with safe defaults"},
+{"check_id": "T12.2", "title": "Error paths fail closed without oracle behavior"}]}
+]}

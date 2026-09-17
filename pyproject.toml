@@ -1,0 +1,14 @@
+# Workspace root: virtual package. The real distribution lives in services/engine.
+[tool.uv.workspace]
+members = ["services/engine"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["services/engine/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -1,0 +1,19 @@
+{
+  "name": "scopeforge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "generate:protocol": "node scripts/generate-protocol.mjs",
+    "test": "vitest run",
+    "test:e2e": "vitest run --project e2e",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "terminal": "pnpm --filter @scopeforge/terminal start"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

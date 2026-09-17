@@ -1,0 +1,12 @@
+{
+  "name": "@scopeforge/terminal",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "scopeforge": "./dist/index.js" },
+  "scripts": {
+    "start": "node ./src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": { "@scopeforge/protocol": "workspace:*" }
+}

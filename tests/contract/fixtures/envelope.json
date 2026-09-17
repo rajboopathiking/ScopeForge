@@ -1,0 +1,28 @@
+{
+  "_comment": "Sample v0 handshake + ordered event. Contract tests assert both sides parse this.",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocol_version": "0.1.0",
+      "client": "terminal/0.1.0"
+    },
+    "protocol_version": "0.1.0",
+    "trace_id": "trace-fixture-0001",
+    "ts": "2026-09-16T00:00:00Z"
+  },
+  "event": {
+    "jsonrpc": "2.0",
+    "method": "token.delta",
+    "params": {
+      "seq": 1,
+      "index": 0,
+      "total": 10000,
+      "text": "hello"
+    },
+    "protocol_version": "0.1.0",
+    "trace_id": "trace-fixture-0001",
+    "ts": "2026-09-16T00:00:00Z"
+  }
+}

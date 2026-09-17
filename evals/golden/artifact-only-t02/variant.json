@@ -1,0 +1,1 @@
+{"actor":"account-b","body":{"error":"forbidden","error_code":"NOT_MEMBER"},"fixture_ownership":"account-a/tenant-a (requested by account-b/tenant-b)","headers":{"x-tenant":"tenant-b"},"status":403,"url":"file://labs/tenancy-demo/export-A-as-B.json"}
