@@ -13,7 +13,7 @@ function run(cmd, args, opts = {}) {
 
 const args = process.argv.slice(2);
 const useLab = args.includes("--lab") ? args[args.indexOf("--lab") + 1] : null;
-const plain = args.includes("--plain");
+const plain = args.includes("--plain") || !process.stdout.isTTY;
 
 // 1. JS deps (ensure tsx bin present — lockfile may have changed)
 if (!existsSync("node_modules/.bin/tsx")) {
