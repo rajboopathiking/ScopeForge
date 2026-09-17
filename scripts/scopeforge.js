@@ -12,6 +12,6 @@ const entry = join(root, "apps/terminal/src/index.ts");
 const args = process.argv.slice(2);
 if (args.length === 0) args.push("--help");
 
-// Use tsx via dlx (no build step) — same as quickstart
-const child = spawn("pnpm", ["dlx", "-y", "tsx", entry, ...args], { stdio: "inherit", cwd: root });
+// Use local tsx (no build step) — falls back to dlx if not installed
+const child = spawn("pnpm", ["exec", "tsx", entry, ...args], { stdio: "inherit", cwd: root });
 child.on("exit", (c) => process.exit(c ?? 0));

@@ -35,19 +35,19 @@ run("pnpm", ["generate:protocol"]);
 import { execSync } from "node:child_process";
 let runId = null;
 try {
-  const out = execSync("pnpm dlx -y tsx apps/terminal/src/index.ts run list --json", { encoding: "utf8" });
+  const out = execSync("pnpm exec tsx apps/terminal/src/index.ts run list --json", { encoding: "utf8" });
   const j = JSON.parse(out);
   runId = j.runs?.[0]?.run_id ?? null;
 } catch {}
 if (!runId) {
   const createArgs = useLab
-    ? ["dlx", "-y", "tsx", "apps/terminal/src/index.ts", "run", "start", "--lab", useLab]
-    : ["dlx", "-y", "tsx", "apps/terminal/src/index.ts", "run", "start", "--mode", "plan"];
+    ? ["exec", "tsx", "apps/terminal/src/index.ts", "run", "start", "--lab", useLab]
+    : ["exec", "tsx", "apps/terminal/src/index.ts", "run", "start", "--mode", "plan"];
   console.log(`▸ pnpm ${createArgs.join(" ")}`);
   const out = execSync(`pnpm ${createArgs.join(" ")} --json`, { encoding: "utf8" });
   runId = JSON.parse(out).run_id;
 }
 console.log(`\n▸ launching TUI — run ${runId} ${plain ? "(plain)" : ""} — q to quit, / for palette, ? for help\n`);
-const tuiArgs = ["dlx", "-y", "tsx", "apps/terminal/src/index.ts", "tui", "--run", runId];
+const tuiArgs = ["exec", "tsx", "apps/terminal/src/index.ts", "tui", "--run", runId];
 if (plain) tuiArgs.push("--plain");
 run("pnpm", tuiArgs);
