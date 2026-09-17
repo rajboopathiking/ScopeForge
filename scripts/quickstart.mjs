@@ -15,14 +15,14 @@ const args = process.argv.slice(2);
 const useLab = args.includes("--lab") ? args[args.indexOf("--lab") + 1] : null;
 const plain = args.includes("--plain");
 
-// 1. JS deps (skip if already present)
-if (!existsSync("node_modules/.pnpm")) {
+// 1. JS deps (ensure tsx bin present — lockfile may have changed)
+if (!existsSync("node_modules/.bin/tsx")) {
   console.log("▸ pnpm install --frozen-lockfile");
   run("pnpm", ["install", "--frozen-lockfile"]);
-} else console.log("✓ node_modules present — skipping pnpm install");
+} else console.log("✓ tsx present — skipping pnpm install");
 
 // 2. Python env
-if (!existsSync(".venv")) {
+if (!existsSync(".venv") || !existsSync(".venv/bin/python")) {
   console.log("▸ uv sync --python 3.12 --all-extras --all-packages");
   run("uv", ["sync", "--python", "3.12", "--all-extras", "--all-packages"]);
 } else console.log("✓ .venv present — skipping uv sync");
