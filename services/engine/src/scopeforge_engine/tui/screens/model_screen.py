@@ -14,9 +14,9 @@ from ...llm_providers.models import LLMConfig, ProviderType
 
 MODEL_PRESETS = [
     ("openrouter-free", "OpenRouter Free (openrouter/free)", "[FREE] [AUTO]"),
-    ("openrouter-free-gemma", "Gemma 4 31B Free (google/gemma-4-31b-it:free)", "[FREE] [FAST]"),
-    ("openrouter-free-liquid", "Liquid LFM 2.5 Free (liquid/lfm-2.5-2.6b:free)", "[FREE] [FAST]"),
+    ("openrouter-free-nemotron", "Nemotron 550B Free (nvidia/...:free)", "[FREE] [ULTRA-FAST]"),
     ("openrouter-free-apodex", "Apodex 1.1 Mini Free (apodex/apodex-1.1-mini:free)", "[FREE] [FAST]"),
+    ("openrouter-free-qwen", "Qwen 3.8 27B Free (qwen/qwen3.8-27b:free)", "[FREE] [CODING]"),
     ("openrouter-claude", "Claude 3.5 Sonnet (anthropic/claude-3.5-sonnet)", "[FRONTIER]"),
     ("gpt-4o", "GPT-4o (openai/gpt-4o)", "[FRONTIER]"),
     ("groq-llama3", "Groq Llama 3.3 (llama-3.3-70b-versatile)", "[ULTRA-FAST]"),
@@ -227,6 +227,49 @@ class ModelPickerModal(ModalScreen[str]):
             max_tokens = max(1, int(max_str))
         except ValueError:
             max_tokens = 4096
+        # Auto-infer provider if auto
+        if provider == "auto":
+            if "openrouter" in model.lower() or (base and "openrouter" in base):
+                provider = "openrouter"
+            elif "groq" in model.lower() or (base and "groq" in base):
+                provider = "groq"
+            elif "claude" in model.lower() or (base and "anthropic" in base):
+                provider = "anthropic"
+            elif "ollama" in model.lower() or (base and "11434" in base):
+                provider = "ollama"
+            elif "gpt" in model.lower() or (base and "openai" in base):
+                provider = "openai"
+
+        # Auto-fill base_url if left blank for known platforms
+        if not base:
+            if provider == "openrouter" or "openrouter" in model.lower():
+                base = "https://openrouter.ai/api/v1"
+            elif provider == "openai":
+                base = "https://api.openai.com/v1"
+            elif provider == "groq":
+                base = "https://api.groq.com/openai/v1"
+            elif provider == "ollama":
+                base = "http://localhost:11434/v1"
+            elif provider == "anthropic":
+                base = "https://api.anthropic.com/v1"
+
+        # Auto-inherit key from manager if not provided
+        if not key:
+            import os
+            if (provider == "openrouter" or "openrouter" in model.lower()) and os.getenv("OPENROUTER_API_KEY"):
+                key = os.getenv("OPENROUTER_API_KEY")
+            elif provider == "openai" and os.getenv("OPENAI_API_KEY"):
+                key = os.getenv("OPENAI_API_KEY")
+            elif provider == "groq" and os.getenv("GROQ_API_KEY"):
+                key = os.getenv("GROQ_API_KEY")
+            elif provider == "anthropic" and os.getenv("ANTHROPIC_API_KEY"):
+                key = os.getenv("ANTHROPIC_API_KEY")
+            else:
+                for p in self.provider_mgr.providers.values():
+                    if p.api_key and (p.provider.value == provider or (provider == "openrouter" and "openrouter" in str(p.api_base))):
+                        key = p.api_key
+                        break
+
         if not name and model:
             name = f"custom-{model.replace('/', '-').split(':')[0]}"
         return name, model, key, base, provider, temp, max_tokens
@@ -237,19 +280,18 @@ class ModelPickerModal(ModalScreen[str]):
         """Return error message if essential fields are missing, else None."""
         # model_name is essential
         if not model:
-            return "✗ Model Name / ID * is required (e.g. deepseek/deepseek-chat, gpt-4o)"
+            return "✗ Model Name / ID * is required (e.g. openrouter/free, deepseek/deepseek-chat, gpt-4o)"
         # base_url is essential
         if not base:
-            return "✗ API Base URL * is required (e.g. https://api.deepseek.com/v1)"
+            return "✗ API Base URL * is required (e.g. https://openrouter.ai/api/v1, https://api.deepseek.com/v1)"
         if not (base.startswith("http://") or base.startswith("https://")):
             return f"✗ Invalid Base URL '{base}'. Must start with http(s)://"
         # api_key is essential except for local providers
         is_local = provider == "ollama" or "localhost" in base or "127.0.0.1" in base
         if not key and not is_local:
-            # Allow env:VAR reference as key
             return (
                 "✗ API Key * is required (or use Ollama/local). "
-                "Paste key or set via env, e.g. OPENROUTER_API_KEY."
+                "Paste key or set via env (e.g. OPENROUTER_API_KEY)."
             )
         if key and key.lower().startswith("env:"):
             var = key[4:].strip()

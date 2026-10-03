@@ -76,10 +76,23 @@ class ChatStream(Widget):
         self._stream_buffer = ""
         self._stream_active = True
 
-    def append_agent_chunk(self, chunk: str):
+    def append_agent_chunk(self, chunk: Any):
         """Append a streamed token chunk and write completed lines in real-time."""
         if not getattr(self, "_stream_active", False):
             self.start_agent_stream("supervisor")
+        if not chunk:
+            return
+        if not isinstance(chunk, str):
+            if isinstance(chunk, list):
+                parts = []
+                for p in chunk:
+                    if isinstance(p, str):
+                        parts.append(p)
+                    elif isinstance(p, dict):
+                        parts.append(str(p.get("text") or p.get("content") or ""))
+                chunk = "".join(parts)
+            else:
+                chunk = str(chunk)
         if not chunk:
             return
         log = self.query_one("#chat-log", RichLog)
@@ -106,9 +119,20 @@ class ChatStream(Widget):
         log.write("")
         self._stream_active = False
 
-    def add_agent_message(self, agent: str, markdown_content: str):
+    def add_agent_message(self, agent: str, markdown_content: Any):
         if getattr(self, "_stream_active", False):
             self.finish_agent_stream()
+        if not isinstance(markdown_content, str):
+            if isinstance(markdown_content, list):
+                parts = []
+                for p in markdown_content:
+                    if isinstance(p, str):
+                        parts.append(p)
+                    elif isinstance(p, dict):
+                        parts.append(str(p.get("text") or p.get("content") or ""))
+                markdown_content = "".join(parts)
+            else:
+                markdown_content = str(markdown_content or "")
         log = self.query_one("#chat-log", RichLog)
         color = {
             "supervisor": "#58a6ff",

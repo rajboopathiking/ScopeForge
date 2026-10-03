@@ -197,14 +197,29 @@ class MultiAgentSecOpsOrchestrator:
             )
             prompt_msgs = [SystemMessage(content=sys_prompt)] + list(state["messages"][-5:])
             prompt_msgs = self.pipeline.run_before_llm(prompt_msgs, {"agent": "Supervisor"})
+            def _extract_chunk_text(chunk_content: Any) -> str:
+                if not chunk_content:
+                    return ""
+                if isinstance(chunk_content, str):
+                    return chunk_content
+                if isinstance(chunk_content, list):
+                    parts = []
+                    for p in chunk_content:
+                        if isinstance(p, str):
+                            parts.append(p)
+                        elif isinstance(p, dict):
+                            parts.append(str(p.get("text") or p.get("content") or ""))
+                    return "".join(parts)
+                return str(chunk_content)
+
             cb = _stream_callback_var.get()
             try:
                 full_chunks = []
                 async for chunk in chat_model.astream(prompt_msgs):
                     full_chunks.append(chunk)
-                    txt = getattr(chunk, "content", "")
+                    txt = _extract_chunk_text(getattr(chunk, "content", ""))
                     if txt and cb:
-                        cb("supervisor", str(txt))
+                        cb("supervisor", txt)
 
                 if full_chunks:
                     response = full_chunks[0]
@@ -212,6 +227,10 @@ class MultiAgentSecOpsOrchestrator:
                         response = response + c
                 else:
                     response = AIMessage(content="")
+
+                extracted_content = _extract_chunk_text(getattr(response, "content", ""))
+                if extracted_content:
+                    response.content = extracted_content
 
                 # Claude Code resilience: reasoning models (deepseek-r1, etc.)
                 # sometimes return empty `content` with reasoning in a separate
@@ -257,29 +276,66 @@ class MultiAgentSecOpsOrchestrator:
                                 f"Query was: **{str(last_message)[:400]}**\n\n"
                                 "Retry once, or switch to a non-reasoning preset:\n"
                                 "- `/model openrouter-free` (`openrouter/free` — verified live)\n"
-                                "- `/model openrouter-free-gemma` / `/model groq-llama3`\n"
+                                "- `/model openrouter-free-nemotron` / `/model groq-llama3`\n"
                                 "- Reasoning models sometimes return reasoning-only chunks; retry usually succeeds."
                             )
                         )
             except Exception as e:
-                # Never return unrelated boilerplate (old TCP/UDP bug). Surface the
-                # real provider error with actionable next steps, Open Code style.
                 err = str(e)
-                # Truncate auth HTML noise, keep first useful line
-                err_short = err.splitlines()[0][:600] if err else type(e).__name__
                 active_cfg = self.provider_mgr.get_active_config()
-                response = AIMessage(
-                    content=(
-                        f"⚠️ **LLM call failed** (`{active_cfg.name}` / `{active_cfg.model}`): {err_short}\n\n"
-                        f"Query was: **{str(last_message)[:400]}**\n\n"
-                        "**Fix (pick one):**\n"
-                        f"- `/model` — switch to a working preset (try `openrouter-free` or `groq-llama3`)\n"
-                        f"- `/config set key <API_KEY>` — set key for `{active_cfg.provider.value}`\n"
-                        f"- `/config set model <model_id>` — e.g. `openrouter/free`\n"
-                        f"- `/config set base <url>` — custom endpoint, `/doctor` to diagnose\n"
-                        f"- Offline mock is active if no key is set; general Q&A still works in limited mode."
+                # Automatic Resilience: If a model fails with 429 rate limit or 404/402,
+                # auto-fallback to the resilient openrouter/free meta-router.
+                fallback_success = False
+                if active_cfg.model != "openrouter/free" and (
+                    active_cfg.provider == ProviderType.OPENROUTER or "openrouter" in str(active_cfg.api_base)
+                ):
+                    try:
+                        from ..llm_providers.factory import create_chat_model
+                        from ..llm_providers.models import LLMConfig
+                        fb_cfg = LLMConfig(
+                            name="openrouter-free-fallback",
+                            provider=ProviderType.OPENROUTER,
+                            model="openrouter/free",
+                            api_key=active_cfg.api_key,
+                            api_base="https://openrouter.ai/api/v1",
+                            temperature=0.2,
+                            extra_headers={
+                                "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+                                "X-Title": "ScopeForge Agent Harness",
+                            },
+                        )
+                        fb_model = create_chat_model(fb_cfg)
+                        fb_chunks = []
+                        async for chunk in fb_model.astream(prompt_msgs):
+                            fb_chunks.append(chunk)
+                            txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                            if txt and cb:
+                                cb("supervisor", txt)
+                        if fb_chunks:
+                            fb_response = fb_chunks[0]
+                            for c in fb_chunks[1:]:
+                                fb_response = fb_response + c
+                            extracted_fb = _extract_chunk_text(getattr(fb_response, "content", ""))
+                            if extracted_fb.strip():
+                                response = AIMessage(content=extracted_fb)
+                                fallback_success = True
+                    except Exception:
+                        fallback_success = False
+
+                if not fallback_success:
+                    err_short = err.splitlines()[0][:600] if err else type(e).__name__
+                    response = AIMessage(
+                        content=(
+                            f"⚠️ **LLM call failed** (`{active_cfg.name}` / `{active_cfg.model}`): {err_short}\n\n"
+                            f"Query was: **{str(last_message)[:400]}**\n\n"
+                            "**Fix (pick one):**\n"
+                            f"- `/model` — switch to a working preset (try `openrouter-free` or `groq-llama3`)\n"
+                            f"- `/config set key <API_KEY>` — set key for `{active_cfg.provider.value}`\n"
+                            f"- `/config set model <model_id>` — e.g. `openrouter/free`\n"
+                            f"- `/config set base <url>` — custom endpoint, `/doctor` to diagnose\n"
+                            f"- Offline mock is active if no key is set; general Q&A still works in limited mode."
+                        )
                     )
-                )
             response = self.pipeline.run_after_llm(response, {"agent": "Supervisor"})
 
             return {

@@ -92,21 +92,10 @@ DEFAULT_PROVIDERS: dict[str, LLMConfig] = {
             "X-Title": "ScopeForge Agent Harness",
         },
     ),
-    "openrouter-free-gemma": LLMConfig(
-        name="openrouter-free-gemma",
+    "openrouter-free-nemotron": LLMConfig(
+        name="openrouter-free-nemotron",
         provider=ProviderType.OPENROUTER,
-        model="google/gemma-4-31b-it:free",
-        api_base="https://openrouter.ai/api/v1",
-        temperature=0.2,
-        extra_headers={
-            "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
-            "X-Title": "ScopeForge Agent Harness",
-        },
-    ),
-    "openrouter-free-liquid": LLMConfig(
-        name="openrouter-free-liquid",
-        provider=ProviderType.OPENROUTER,
-        model="liquid/lfm-2.5-2.6b:free",
+        model="nvidia/nemotron-3-ultra-550b-a55b:free",
         api_base="https://openrouter.ai/api/v1",
         temperature=0.2,
         extra_headers={
@@ -118,6 +107,40 @@ DEFAULT_PROVIDERS: dict[str, LLMConfig] = {
         name="openrouter-free-apodex",
         provider=ProviderType.OPENROUTER,
         model="apodex/apodex-1.1-mini:free",
+        api_base="https://openrouter.ai/api/v1",
+        temperature=0.2,
+        extra_headers={
+            "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+            "X-Title": "ScopeForge Agent Harness",
+        },
+    ),
+    "openrouter-free-qwen": LLMConfig(
+        name="openrouter-free-qwen",
+        provider=ProviderType.OPENROUTER,
+        model="qwen/qwen3.8-27b:free",
+        api_base="https://openrouter.ai/api/v1",
+        temperature=0.2,
+        extra_headers={
+            "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+            "X-Title": "ScopeForge Agent Harness",
+        },
+    ),
+    # Aliases for models subject to upstream 429 rate limits
+    "openrouter-free-gemma": LLMConfig(
+        name="openrouter-free-gemma",
+        provider=ProviderType.OPENROUTER,
+        model="openrouter/free",
+        api_base="https://openrouter.ai/api/v1",
+        temperature=0.2,
+        extra_headers={
+            "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+            "X-Title": "ScopeForge Agent Harness",
+        },
+    ),
+    "openrouter-free-liquid": LLMConfig(
+        name="openrouter-free-liquid",
+        provider=ProviderType.OPENROUTER,
+        model="openrouter/free",
         api_base="https://openrouter.ai/api/v1",
         temperature=0.2,
         extra_headers={

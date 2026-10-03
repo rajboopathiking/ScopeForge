@@ -278,7 +278,7 @@ async def test_claude_code_tui_slash_commands():
         pilot.app.handle_user_input("/pr")
         await pilot.pause()
         # Test /model openrouter dynamic configuration
-        pilot.app.handle_user_input("/model openrouter deepseek/deepseek-r1")
+        pilot.app.handle_user_input("/model openrouter openrouter/free")
         await pilot.pause()
         assert "openrouter" in pilot.app.provider_mgr.active_provider_name
 
@@ -311,10 +311,10 @@ async def test_interactive_model_config_modal():
         opt_list = modal.query_one("#model-option-list", OptionList)
         assert opt_list.option_count >= 8
 
-        # Test selecting preset via keyboard shortcut '2' (Gemma 4 31B Free)
+        # Test selecting preset via keyboard shortcut '2' (Nemotron 550B Free)
         await pilot.press("2")
         await pilot.pause()
-        assert "gemma" in pilot.app.provider_mgr.active_provider_name
+        assert "nemotron" in pilot.app.provider_mgr.active_provider_name
 
         # 2. Re-open and switch to Custom view
         pilot.app.handle_user_input("/model")
