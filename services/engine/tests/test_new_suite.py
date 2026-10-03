@@ -298,35 +298,57 @@ async def test_general_llm_qa():
 async def test_interactive_model_config_modal():
     from scopeforge_engine.tui.app import ScopeForgeTUIApp
     from scopeforge_engine.tui.screens.model_screen import ModelPickerModal
-    from textual.widgets import Button, Input
+    from textual.widgets import Button, Input, OptionList
     app = ScopeForgeTUIApp()
     async with app.run_test() as pilot:
-        # Open model screen via /config model
+        # 1. Open model screen via /config model
         pilot.app.handle_user_input("/config model")
         await pilot.pause()
         assert isinstance(pilot.app.screen, ModelPickerModal)
         modal = pilot.app.screen
 
-        # Click OpenRouter Free preset button
-        btn = modal.query_one("#btn-pre-or-free", Button)
-        btn.press()
+        # Verify OptionList contains model presets
+        opt_list = modal.query_one("#model-option-list", OptionList)
+        assert opt_list.option_count >= 8
+
+        # Test selecting preset via keyboard shortcut '2' (DeepSeek R1 Free)
+        await pilot.press("2")
+        await pilot.pause()
+        assert "deepseek" in pilot.app.provider_mgr.active_provider_name
+
+        # 2. Re-open and switch to Custom view
+        pilot.app.handle_user_input("/model")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, ModelPickerModal)
+        modal = pilot.app.screen
+
+        btn_custom = modal.query_one("#btn-go-custom", Button)
+        btn_custom.press()
         await pilot.pause()
 
-        name_input = modal.query_one("#inp-cfg-name", Input)
-        assert name_input.value == "openrouter-free"
-
+        # Fill custom model
         model_input = modal.query_one("#inp-cfg-model", Input)
-        assert model_input.value == "openrouter/free"
+        model_input.value = "anthropic/claude-3.5-haiku"
 
-        # Click Save to config only
-        save_btn = modal.query_one("#btn-save-only", Button)
-        save_btn.press()
+        # Apply and activate
+        btn_save = modal.query_one("#btn-save-activate", Button)
+        btn_save.press()
         await pilot.pause()
-        assert "openrouter-free" in pilot.app.provider_mgr.providers
+        assert "claude-3.5-haiku" in pilot.app.provider_mgr.get_active_config().model
 
-        # Close modal
-        modal.dismiss(None)
+        # 3. Test inline /config set commands
+        pilot.app.handle_user_input("/config set model deepseek/deepseek-r1:free")
         await pilot.pause()
+        assert pilot.app.provider_mgr.get_active_config().model == "deepseek/deepseek-r1:free"
+
+        pilot.app.handle_user_input("/config set temp 0.5")
+        await pilot.pause()
+        assert pilot.app.provider_mgr.get_active_config().temperature == 0.5
+
+        # 4. Test /config free instant switch
+        pilot.app.handle_user_input("/config free")
+        await pilot.pause()
+        assert pilot.app.provider_mgr.active_provider_name == "openrouter-free"
 
 
 

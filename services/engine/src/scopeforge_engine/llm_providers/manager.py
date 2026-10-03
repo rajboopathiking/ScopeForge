@@ -96,6 +96,41 @@ class ProviderManager:
         self.providers[config.name] = config
         self.save_config()
 
+    def update_active_config(
+        self,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> LLMConfig:
+        """Update active configuration parameters dynamically."""
+        cfg = self.get_active_config().model_copy()
+        if model is not None:
+            cfg.model = model
+            if ":free" in model or "openrouter" in model or cfg.provider == ProviderType.OPENROUTER:
+                cfg.extra_headers.setdefault("HTTP-Referer", "https://github.com/rajboopathiking/ScopeForge")
+                cfg.extra_headers.setdefault("X-Title", "ScopeForge Agent Harness")
+        if provider is not None:
+            try:
+                cfg.provider = ProviderType(provider.lower())
+            except Exception:
+                pass
+        if api_key is not None:
+            cfg.api_key = api_key
+        if api_base is not None:
+            cfg.api_base = api_base
+        if temperature is not None:
+            cfg.temperature = temperature
+        if max_tokens is not None:
+            cfg.max_tokens = max_tokens
+
+        self.providers[cfg.name] = cfg
+        self._cached_chat_model = None
+        self.save_config()
+        return cfg
+
     def get_chat_model(self, force_refresh: bool = False) -> BaseChatModel:
         """Get or instantiate the active LangChain ChatModel."""
         if self._cached_chat_model is None or force_refresh:

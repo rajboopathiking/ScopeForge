@@ -253,21 +253,132 @@ class ScopeForgeTUIApp(App):
                 chat.add_agent_message("Supervisor", f"🔌 **Model Context Protocol (MCP) Servers:**\n\n{s_list}\n\n*Commands: `/mcp add <name> <cmd>`, `/mcp enable <name>`, `/mcp disable <name>`*")
 
         elif action == "/config":
-            if len(parts) > 1 and parts[1].lower() in ("model", "models", "provider", "providers"):
+            tokens = cmd.strip().split()
+            subcmd = tokens[1].lower() if len(tokens) > 1 else ""
+
+            if subcmd in ("model", "models", "provider", "providers"):
                 self.action_pick_model()
                 return
+
+            elif subcmd in ("free", "openrouter-free", "openrouter/free"):
+                self.provider_mgr.set_active_provider("openrouter-free")
+                self._sync_header()
+                chat.add_agent_message("Supervisor", "✓ Switched active LLM to OpenRouter Free tier (**openrouter/free**).")
+                return
+
+            elif subcmd == "reset":
+                self.provider_mgr.set_active_provider("openrouter-free")
+                self.sec_mode = "plan"
+                self.pipeline.middlewares[1].set_mode("plan")
+                self._sync_header()
+                chat.add_agent_message("Supervisor", "✓ Active configuration reset to default OpenRouter Free tier and PLAN mode.")
+                return
+
+            elif subcmd == "key" and len(tokens) > 2:
+                new_key = tokens[2].strip()
+                self.provider_mgr.update_active_config(api_key=new_key)
+                masked = f"...{new_key[-4:]}" if len(new_key) >= 4 else "••••"
+                chat.add_agent_message("Supervisor", f"✓ API key updated for active profile (ending in `{masked}`).")
+                return
+
+            elif subcmd == "set" and len(tokens) >= 4:
+                key_name = tokens[2].lower()
+                val = " ".join(tokens[3:]).strip()
+
+                if key_name in ("model", "model_id"):
+                    if val.lower() in ("free", "openrouter/free", "openrouter:free"):
+                        self.provider_mgr.set_active_provider("openrouter-free")
+                        self._sync_header()
+                        chat.add_agent_message("Supervisor", "✓ Switched active LLM model to OpenRouter Free tier (**openrouter/free**).")
+                    else:
+                        self.provider_mgr.update_active_config(model=val)
+                        self._sync_header()
+                        chat.add_agent_message("Supervisor", f"✓ Updated active model to **{val}**.")
+                    return
+
+                elif key_name in ("provider", "platform"):
+                    self.provider_mgr.update_active_config(provider=val.lower())
+                    self._sync_header()
+                    chat.add_agent_message("Supervisor", f"✓ Updated active provider platform to **{val.lower()}**.")
+                    return
+
+                elif key_name in ("key", "api_key", "token"):
+                    self.provider_mgr.update_active_config(api_key=val)
+                    masked = f"...{val[-4:]}" if len(val) >= 4 else "••••"
+                    chat.add_agent_message("Supervisor", f"✓ API key updated (ending in `{masked}`).")
+                    return
+
+                elif key_name in ("base", "api_base", "base_url", "url"):
+                    self.provider_mgr.update_active_config(api_base=val)
+                    chat.add_agent_message("Supervisor", f"✓ API base URL updated to `{val}`.")
+                    return
+
+                elif key_name in ("temp", "temperature"):
+                    try:
+                        temp_val = float(val)
+                        temp_val = max(0.0, min(temp_val, 2.0))
+                        self.provider_mgr.update_active_config(temperature=temp_val)
+                        chat.add_agent_message("Supervisor", f"✓ Temperature updated to `{temp_val}`.")
+                    except ValueError:
+                        chat.add_agent_message("Supervisor", f"✗ Invalid temperature '{val}'. Must be a float between 0.0 and 2.0.")
+                    return
+
+                elif key_name in ("tokens", "max_tokens"):
+                    try:
+                        tok_val = int(val)
+                        self.provider_mgr.update_active_config(max_tokens=tok_val)
+                        chat.add_agent_message("Supervisor", f"✓ Max tokens updated to `{tok_val}`.")
+                    except ValueError:
+                        chat.add_agent_message("Supervisor", f"✗ Invalid token count '{val}'. Must be an integer.")
+                    return
+
+                elif key_name in ("mode", "sec_mode"):
+                    m_val = val.lower()
+                    if m_val in ("plan", "artifacts", "live"):
+                        self.sec_mode = m_val
+                        self.pipeline.middlewares[1].set_mode(self.sec_mode)
+                        self._sync_header()
+                        chat.add_agent_message("Supervisor", f"✓ Switched execution mode to **{self.sec_mode.upper()}**.")
+                    else:
+                        chat.add_agent_message("Supervisor", "✗ Mode must be one of: `plan`, `artifacts`, `live`")
+                    return
+
+                else:
+                    chat.add_agent_message(
+                        "Supervisor",
+                        f"✗ Unknown configuration key '{key_name}'. Supported keys:\n"
+                        "`model`, `provider`, `key`, `base`, `temp`, `tokens`, `mode`"
+                    )
+                    return
+
             active_cfg = self.provider_mgr.get_active_config()
+            key_status = (
+                f"Configured (`...{active_cfg.api_key[-4:]}`)"
+                if active_cfg.api_key
+                else "Environment variable / Free Tier"
+            )
+            base_url = active_cfg.api_base or "Default provider endpoint"
+
             cfg_text = (
-                "⚙️ **Active ScopeForge Configuration:**\n\n"
-                f"- **Model**: `{active_cfg.name}` ({active_cfg.provider.value} / `{active_cfg.model}`)\n"
-                f"- **Temperature**: `{active_cfg.temperature}`\n"
-                f"- **Max Tokens**: `{active_cfg.max_tokens}`\n"
-                f"- **Execution Mode**: `{self.sec_mode.upper()}`\n"
-                f"- **Authorized Scopes**: `{', '.join(self.current_scope)}`\n"
-                f"- **RAG Store**: LlamaIndex ({len(self.rag.documents)} documents indexed)\n"
-                f"- **Active Skills**: `{', '.join(self.skill_mgr.active_skills) or 'None (auto-detection active)'}`\n"
-                f"- **Audit Logging**: `.scopeforge/audit.jsonl` (Active SHA256 chain)\n\n"
-                "*Tip: Type `/config model` or `/model` to configure providers & models directly in the TUI.*"
+                "⚙️ **ScopeForge Runtime & LLM Configuration:**\n\n"
+                f"- **Active Model**: `{active_cfg.name}` (`{active_cfg.model}`)\n"
+                f"- **Provider Platform**: `{active_cfg.provider.value}`\n"
+                f"- **API Key Status**: {key_status}\n"
+                f"- **API Base URL**: `{base_url}`\n"
+                f"- **Sampling Temperature**: `{active_cfg.temperature}`\n"
+                f"- **Max Generation Tokens**: `{active_cfg.max_tokens}`\n"
+                f"- **Guardrail Mode**: `{self.sec_mode.upper()}` (ScopeGate Enforced)\n"
+                f"- **Target Scopes**: `{', '.join(self.current_scope)}`\n"
+                f"- **RAG Store**: LlamaIndex ({len(self.rag.documents)} SecOps docs indexed)\n"
+                f"- **Active Skills**: `{', '.join(self.skill_mgr.active_skills) or 'None (auto-routing)'}`\n\n"
+                "**Fast Inline Commands (Claude Code / Open Code style):**\n"
+                "- `/model` or `/config model` : Open instant interactive switcher\n"
+                "- `/config set model <id>` : Switch active model (`deepseek/deepseek-r1:free`)\n"
+                "- `/config set key <api-key>` : Configure provider API key\n"
+                "- `/config set temp <float>` : Set temperature (`0.0` - `1.0`)\n"
+                "- `/config set mode <plan|artifacts|live>` : Change guardrail mode\n"
+                "- `/config free` : Instant switch to zero-cost OpenRouter free tier\n"
+                "- `/config reset` : Reset to initial default configuration"
             )
             chat.add_agent_message("Supervisor", cfg_text)
 

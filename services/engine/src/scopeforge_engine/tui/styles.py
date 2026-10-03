@@ -72,12 +72,36 @@ ModalScreen {
 }
 
 #modal-dialog {
-    width: 85%;
-    height: 85%;
+    width: 75%;
+    height: 75%;
     background: #161b22;
     border: thick #58a6ff;
     padding: 1 2;
     layout: vertical;
+}
+
+#model-picker-dialog {
+    width: 72;
+    height: auto;
+    max-height: 28;
+    background: #161b22;
+    border: thick #58a6ff;
+    padding: 1 2;
+    layout: vertical;
+}
+
+#model-option-list {
+    height: auto;
+    max-height: 16;
+    background: #0d1117;
+    border: solid #30363d;
+    margin-top: 1;
+    margin-bottom: 1;
+}
+
+.modal-hint {
+    color: #8b949e;
+    margin-bottom: 1;
 }
 
 #modal-title {
