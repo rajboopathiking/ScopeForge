@@ -4,41 +4,81 @@ ScopeForge provides a model-agnostic agent harness supporting hosted frontier mo
 
 ---
 
-## 1. Switching Models
+## 1. Switching & Configuring Models
 
-You can switch models in **three ways**:
+You can configure and switch models in **three ways**:
 
-### A. Via TUI Slash Command
-Type in the prompt bar:
-```text
-/model claude-3-7-sonnet
-/model gpt-4o
-/model ollama-llama3
-/model openrouter-claude
-/model groq-llama3
-/model mock-secops
+### A. Via In-Terminal TUI Configuration Center (`/model` or `/config model`)
+ScopeForge features an interactive, keyboard-driven **LLM Provider & Model Configuration Center** directly inside the Terminal UI:
+- Open with `/model` or `/config model` in the prompt bar.
+- **Tab 1 ("📋 Active Models & Quick Switch")**:
+  - Displays a live table of all registered providers (`Active`, `Name`, `Provider`, `Model ID`, `Temperature`).
+  - Select with <kbd>↑</kbd> / <kbd>↓</kbd> and click **`Activate Selected`** or press <kbd>Enter</kbd>.
+- **Tab 2 ("⚙️ Configure Provider in UI")**:
+  - **Quick Presets (One-Click Auto-Fill)**:
+    - `[OpenRouter Free]` (`openrouter/free`)
+    - `[DeepSeek R1 Free]` (`deepseek/deepseek-r1:free`)
+    - `[Llama 3.3 Free]` (`meta-llama/llama-3.3-70b-instruct:free`)
+    - `[Gemini 2.0 Free]` (`google/gemini-2.0-flash-exp:free`)
+    - `[Claude 3.5]` (`anthropic/claude-3.5-sonnet`)
+    - `[Local Ollama]` (`llama3:latest` at `http://localhost:11434`)
+  - **Custom Form Inputs**:
+    - **Provider Platform**: Dropdown with `openrouter`, `anthropic`, `openai`, `ollama`, `groq`, `custom`.
+    - **Configuration Name**: Identifier for the provider entry.
+    - **Model ID**: Any model identifier (e.g. `openrouter/free`, `deepseek/deepseek-r1:free`).
+    - **API Key**: Secure password input (masked for screen privacy; optional if set in ENV).
+    - **API Base URL**: Customizable endpoint (e.g. `https://openrouter.ai/api/v1` or local vLLM `http://localhost:8000/v1`).
+    - **Temperature & Max Tokens**: Adjust sampling temperature and token limits.
+  - **Action Buttons**:
+    - **`💾 Save & Activate in UI`**: Saves the configuration to `.scopeforge/providers.yaml` and immediately activates it for your live session.
+    - **`Save to Config Only`**: Registers the model without interrupting your current session.
+
+```
+╭─────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ⚡ LLM Provider & Model Configuration Center                                               │
+│                                                                                             │
+│  [📋 Active Models & Quick Switch]   [⚙️ Configure Provider in UI]                          │
+│                                                                                             │
+│  🚀 Quick Presets (Click to Auto-Fill):                                                     │
+│  [ OpenRouter Free ]  [ DeepSeek R1 Free ]  [ Llama 3.3 Free ]  [ Gemini 2.0 Free ] ...     │
+│                                                                                             │
+│  Provider Platform: [ OpenRouter (openrouter.ai)                                          ] │
+│  Configuration Name: [ openrouter-free                                                    ] │
+│  Model ID:           [ openrouter/free                                                    ] │
+│  API Key:            [ ••••••••••••••••••••••••••••••••                                   ] │
+│  API Base URL:       [ https://openrouter.ai/api/v1                                       ] │
+│  Temperature: [ 0.2 ]                    Max Tokens: [ 4096 ]                               │
+│                                                                                             │
+│  [ 💾 Save & Activate in UI ]       [ Save to Config Only ]       [ Close (Esc) ]           │
+╰─────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-### B. Via Interactive Picker Modal
-Type `/model` without arguments (or use the Model Picker shortcut):
-- Navigates an interactive table of all registered providers.
-- Select with <kbd>↑</kbd> / <kbd>↓</kbd> and press <kbd>Enter</kbd> to activate.
+### B. Via Fast CLI / Slash Commands
+```text
+/model free                                      # Activate OpenRouter Free tier
+/model openrouter deepseek/deepseek-r1:free      # Mount DeepSeek R1 Free on the fly
+/model openrouter meta-llama/llama-3.3-70b:free  # Mount Llama 3.3 Free on the fly
+/model claude-3-7-sonnet                         # Direct Anthropic Claude 3.7
+/model gpt-4o                                    # Direct OpenAI GPT-4o
+/model ollama-llama3                             # Local offline Ollama
+```
 
-### C. Via Configuration File
-Edit `.scopeforge/providers.yaml`:
+### C. Via Configuration File (`.scopeforge/providers.yaml`)
+Configurations saved through the UI are automatically persisted to `.scopeforge/providers.yaml`:
 ```yaml
-active: claude-3-7-sonnet
+active: openrouter-free
 providers:
-  claude-3-7-sonnet:
-    name: claude-3-7-sonnet
-    provider: anthropic
-    model: claude-3-7-sonnet-20250219
-    temperature: 0.1
-  gpt-4o:
-    name: gpt-4o
-    provider: openai
-    model: gpt-4o
-    temperature: 0.1
+  openrouter-free:
+    name: openrouter-free
+    provider: openrouter
+    model: openrouter/free
+    api_base: https://openrouter.ai/api/v1
+    temperature: 0.2
+    max_tokens: 4096
+    streaming: true
+    extra_headers:
+      HTTP-Referer: https://github.com/rajboopathiking/ScopeForge
+      X-Title: ScopeForge Agent Harness
 ```
 
 ---

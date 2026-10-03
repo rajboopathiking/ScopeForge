@@ -57,18 +57,22 @@ uv run scopeforge-tui
 
 **Key Features:**
 - **Sleek Claude Code / Open Code Look & Feel**: Modern dark theme, status pills (`[Model]`, `[Mode]`, `[Scope]`, `[Tokens]`), collapsible tool cards, markdown rendering, and finding badges.
-- **Custom LLM Providers**: Hot-swap Anthropic (Claude 3.7 Sonnet), OpenAI (GPT-4o), Ollama (Local Llama 3 / DeepSeek R1), OpenRouter, Groq, or offline Mock via `/model`.
-- **LangGraph Multi-Agent Team**: `Supervisor`, `ReconAgent`, `AuditAgent`, `ExploitAgent`, `ReportAgent`, plus custom agents loaded from `.scopeforge/agents/`.
+- **In-Terminal Model & Provider Configuration Center**: Configure, auto-fill, and hot-swap any model entirely within the TUI (`/model` or `/config model`) with zero YAML editing.
+- **OpenRouter Free Tier Integration**: Out-of-the-box zero-cost models (`openrouter/free`, `deepseek/deepseek-r1:free`, `meta-llama/llama-3.3-70b-instruct:free`, `google/gemini-2.0-flash-exp:free`).
+- **Claude Code Developer Toolset**: Native file inspection (`view_file`), surgical editing (`edit_file`), file creation (`write_file`), glob search (`glob_files`), regex search (`grep_search`), and git operations (`git_diff_tool`, `git_status_tool`, `git_commit_tool`).
+- **Claude Code Slash Commands**: Full command suite including `/init` (`SCOPEFORGE.md` project memory), `/diff`, `/commit`, `/review`, `/compact`, `/doctor`, `/pr`, and `/cost`.
+- **General LLM Q&A & Architecture Assistant**: General queries are answered directly by the active model Supervisor, while security actions engage specialized agents with ScopeGate RoE safety.
+- **LangGraph Multi-Agent Team**: `Supervisor`, `DevAgent`, `ReconAgent`, `AuditAgent`, `ExploitAgent`, `ReportAgent`, plus custom agents loaded from `.scopeforge/agents/`.
 - **A2A Protocol (Agent-to-Agent)**: Cryptographically signed inter-agent communication bus for task delegation, consensus, and handovers.
 - **LlamaIndex RAG**: Embedded cybersecurity knowledge base (OWASP Top 10, CVE advisories, bug bounty RoE) with `/rag <query>` and `/rag ingest <path>`.
 - **LLM Wiki & User Preferences**: Persistent memory (`preferences.md`, `targets.md`, `playbooks.md`) with automatic context injection and interactive `/wiki` editor.
-- **Specialized Skills System (`SKILL.md`)**: Modular skills in `.scopeforge/skills/` with auto-detection triggers.
+- **Specialized Skills System (`SKILL.md`)**: Modular skills in `skills/` and `.scopeforge/skills/` with auto-detection triggers.
 - **Model Context Protocol (MCP)**: Dynamically connect and run tools from MCP servers.
 
 **Documentation:**
 - **[Master Manual (docs/SCOPEFORGE_MANUAL.md)](docs/SCOPEFORGE_MANUAL.md)**: Exhaustive manual covering TUI, LangGraph, RAG, Wiki, Skills, MCP, RoE, and Benchmarks.
-- **[TUI Guide (docs/tui_guide.md)](docs/tui_guide.md)**: Full terminal UI navigation, layout, keybindings (<kbd>F1</kbd>-<kbd>F5</kbd>), and slash commands.
-- **[Models & Config (docs/models_and_config.md)](docs/models_and_config.md)**: Provider setup (Anthropic, OpenAI, Ollama, OpenRouter, Groq, local endpoints), hot-swapping, and config.
+- **[TUI Guide (docs/tui_guide.md)](docs/tui_guide.md)**: Full terminal UI navigation, layout, keybindings (<kbd>F1</kbd>-<kbd>F5</kbd>), slash commands, and in-terminal configuration center.
+- **[Models & Config (docs/models_and_config.md)](docs/models_and_config.md)**: In-terminal configuration center, OpenRouter Free models, provider setup, hot-swapping, and general Q&A.
 - **[Specialized Skills (docs/skills.md)](docs/skills.md)**: Creating custom skills (`SKILL.md`), YAML frontmatter, triggers, and auto-activation.
 - **[MCP Customization (docs/mcp.md)](docs/mcp.md)**: Connecting MCP stdio servers, permissions, and tool execution with ScopeGate.
 - **[Why ScopeForge is Better for Cybersecurity (docs/cybersecurity_harness_comparison.md)](docs/cybersecurity_harness_comparison.md)**: Architectural comparison against generic agents (Claude Code, CrewAI, PentestGPT).

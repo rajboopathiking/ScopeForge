@@ -109,6 +109,21 @@ ScopeForge provides the full developer toolset found in Claude Code and Open Cod
 - **`git_status_tool()`**: Repository status, active branch, and untracked files.
 - **`git_commit_tool(message)`**: Safe commit execution.
 
+---
+
+## 4.2 In-Terminal Model & Provider Configuration Center
+
+Launch via `/model` or `/config model`:
+
+- **Tab 1: 📋 Active Models & Quick Switch**:
+  - Live table of all registered models (`Active`, `Name`, `Provider`, `Model ID`, `Temperature`).
+  - Highlight desired model with <kbd>↑</kbd>/<kbd>↓</kbd> and click **`Activate Selected`**.
+- **Tab 2: ⚙️ Configure Provider in UI**:
+  - **Quick Presets**: One-click auto-fill for `OpenRouter Free` (`openrouter/free`), `DeepSeek R1 Free` (`deepseek/deepseek-r1:free`), `Llama 3.3 Free` (`meta-llama/llama-3.3-70b-instruct:free`), `Gemini 2.0 Free` (`google/gemini-2.0-flash-exp:free`), `Claude 3.5`, and `Local Ollama`.
+  - **Interactive Inputs**: Provider Platform, Config Name, Model ID, Masked API Key, API Base URL, Temperature, Max Tokens.
+  - **Instant Buttons**:
+    - **`💾 Save & Activate in UI`**: Saves to `.scopeforge/providers.yaml` and switches the active session model immediately.
+    - **`Save to Config Only`**: Adds the provider to registry without switching current active session.
 
 ---
 

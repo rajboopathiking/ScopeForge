@@ -117,13 +117,20 @@ uv run scopeforge-tui
 ### Slash Commands Reference
 | Command | Arguments | Description |
 |---|---|---|
+| **`/init`** | None | Initialize `SCOPEFORGE.md` project memory in repo root |
+| **`/diff`** | None | View git diff of working tree changes in chat stream |
+| **`/commit`** | `[message]` | Commit staged changes or auto-generate a commit message |
+| **`/review`** | None | Autonomous Claude Code review of git changes for bugs & security flaws |
+| **`/compact`** | None | Compact conversation history to free up LLM token budget |
+| **`/doctor`** | None | Run full system health & diagnostic check (Python, git, LLM, MCP, audit log) |
+| **`/pr`** | None | Generate formatted GitHub Pull Request description template |
 | `/help` | None | Open interactive documentation cheat sheet |
 | `/model` | `[name]` | Switch LLM or open interactive model selector modal |
 | `/mode` | `<plan\|artifacts\|live>` | Change ScopeGate safety execution mode |
-| `/agent` | `<name>` | Direct task specifically to `recon`, `audit`, `exploit`, `report`, `cloudsec`, or `apisec` |
+| `/agent` | `<name>` | Direct task specifically to `dev`, `recon`, `audit`, `exploit`, `report` |
 | `/skill` | `[list\|<name>]` | Discover or toggle specialized agent skills |
 | `/mcp` | `[list\|add\|enable\|disable]` | Manage Model Context Protocol (MCP) external servers |
-| `/config` | None | Inspect runtime model parameters, safety modes, and rules |
+| `/config` | `[model]` | Inspect active configuration or open model configuration center |
 | `/status` | None | Display full mission status and agent team health |
 | `/cost` | None | View session token usage and estimated costs |
 | `/rag` | `<query>` | Query LlamaIndex cybersecurity store (OWASP, CVEs, RoE) |
@@ -137,33 +144,53 @@ uv run scopeforge-tui
 
 ---
 
-## 4. LLM Provider Management
+## 4. LLM Provider Management & In-Terminal UI Configuration
 
-### Switching Models
-Switch on the fly:
+### In-Terminal TUI Model & Provider Configuration Center
+Open the interactive Configuration Center directly from the prompt:
 ```text
+/model
+# or:
+/config model
+```
+- **Tab 1: 📋 Active Models & Quick Switch**: Browse registered providers in a live table and click `Activate Selected`.
+- **Tab 2: ⚙️ Configure Provider in UI**:
+  - One-click presets: `[OpenRouter Free]`, `[DeepSeek R1 Free]`, `[Llama 3.3 Free]`, `[Gemini 2.0 Free]`, `[Claude 3.5]`, `[Local Ollama]`.
+  - Form inputs: Provider Platform, Name, Model ID, Masked API Key, Base URL, Temperature, Max Tokens.
+  - Buttons: **`💾 Save & Activate in UI`** (instantly updates `.scopeforge/providers.yaml` and active session) and **`Save to Config Only`**.
+
+### OpenRouter Free Tier Models (Zero Cost)
+ScopeForge supports OpenRouter's free router and free-tier reasoning models out of the box:
+```text
+/model free                                      # Switch to OpenRouter Free tier (openrouter/free)
+/model openrouter deepseek/deepseek-r1:free      # DeepSeek R1 reasoning free model
+/model openrouter meta-llama/llama-3.3-70b:free  # Meta Llama 3.3 70B instruct free model
+/model openrouter google/gemini-2.0-flash-exp:free # Gemini 2.0 Flash free model
+```
+
+### Switching Models via Fast Commands
+```text
+/model openrouter-free        # OpenRouter free tier (openrouter/free)
 /model claude-3-7-sonnet      # Anthropic Claude 3.7 Sonnet
 /model gpt-4o                 # OpenAI GPT-4o
 /model ollama-llama3          # Local Ollama Llama 3
 /model ollama-deepseek-r1     # Local Ollama DeepSeek R1
-/model openrouter-claude      # OpenRouter aggregator
 /model groq-llama3            # Groq ultra-low latency
 /model mock-secops            # Offline zero-API-key simulation
 ```
-Or type `/model` to browse models interactively in a table.
 
 ### Setting API Keys
 ```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
-export OPENROUTER_API_KEY="sk-or-..."
 export GROQ_API_KEY="gsk_..."
 ```
 
 ### Adding Custom Endpoints (`.scopeforge/providers.yaml`)
 To connect private or local vLLM / LMStudio / Ollama endpoints:
 ```yaml
-active: local-vllm
+active: openrouter-free
 providers:
   local-vllm:
     name: local-vllm
