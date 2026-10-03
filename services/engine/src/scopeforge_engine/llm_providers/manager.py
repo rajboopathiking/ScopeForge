@@ -43,12 +43,12 @@ class ProviderManager:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
-                active = data.get("active")
-                if active and active in self.providers:
-                    self.active_provider_name = active
                 custom_list = data.get("providers", {})
                 for name, p_data in custom_list.items():
                     self.providers[name] = LLMConfig(**p_data)
+                active = data.get("active")
+                if active and active in self.providers:
+                    self.active_provider_name = active
             except Exception:
                 pass
 
@@ -95,6 +95,60 @@ class ProviderManager:
         """Add or update a provider config."""
         self.providers[config.name] = config
         self.save_config()
+
+    def add_custom_provider(
+        self,
+        name: str,
+        model: str,
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+        provider: Optional[str] = None,
+        temperature: float = 0.2,
+        set_active: bool = True,
+    ) -> LLMConfig:
+        """Register a custom LLM model using name, model ID, API key, and base URL."""
+        name = name.strip() if name and name.strip() else f"custom-{model.replace('/', '-').split(':')[0]}"
+        ptype = ProviderType.CUSTOM
+        if provider:
+            try:
+                ptype = ProviderType(provider.lower())
+            except Exception:
+                ptype = ProviderType.CUSTOM
+        elif api_base and "openrouter.ai" in api_base:
+            ptype = ProviderType.OPENROUTER
+        elif api_base and "anthropic" in api_base:
+            ptype = ProviderType.ANTHROPIC
+        elif api_base and "groq" in api_base:
+            ptype = ProviderType.GROQ
+        elif api_base and ("localhost:11434" in api_base or "ollama" in api_base):
+            ptype = ProviderType.OLLAMA
+        elif "openrouter" in model.lower():
+            ptype = ProviderType.OPENROUTER
+        elif "claude" in model.lower():
+            ptype = ProviderType.ANTHROPIC
+        elif "gpt" in model.lower():
+            ptype = ProviderType.OPENAI
+
+        extra_headers = {}
+        if ptype == ProviderType.OPENROUTER or (api_base and "openrouter" in api_base):
+            extra_headers = {
+                "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+                "X-Title": "ScopeForge Agent Harness",
+            }
+
+        cfg = LLMConfig(
+            name=name,
+            provider=ptype,
+            model=model,
+            api_key=api_key if api_key and api_key.strip() else None,
+            api_base=api_base if api_base and api_base.strip() else None,
+            temperature=temperature,
+            extra_headers=extra_headers,
+        )
+        self.register_provider(cfg)
+        if set_active:
+            self.set_active_provider(name)
+        return cfg
 
     def update_active_config(
         self,

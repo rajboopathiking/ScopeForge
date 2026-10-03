@@ -81,9 +81,9 @@ ModalScreen {
 }
 
 #model-picker-dialog {
-    width: 72;
+    width: 78;
     height: auto;
-    max-height: 28;
+    max-height: 32;
     background: #161b22;
     border: thick #58a6ff;
     padding: 1 2;
@@ -119,14 +119,61 @@ ModalScreen {
 
 #modal-buttons, #modal-buttons-select, #modal-buttons-config {
     height: 3;
-    dock: bottom;
     layout: horizontal;
     align: right middle;
     margin-top: 1;
 }
 
+Button {
+    height: 3;
+    min-width: 13;
+    padding: 0 1;
+    border: tall #30363d;
+    text-align: center;
+    content-align: center middle;
+    color: #f0f6fc;
+}
+
+Button.-primary {
+    background: #1f6feb;
+    color: #ffffff;
+    text-style: bold;
+    border: tall #388bfd;
+}
+
+Button.-success {
+    background: #238636;
+    color: #ffffff;
+    text-style: bold;
+    border: tall #2ea043;
+}
+
+Button.-default {
+    background: #21262d;
+    color: #e6edf3;
+    border: tall #30363d;
+}
+
+Button.-error {
+    background: #da3633;
+    color: #ffffff;
+    text-style: bold;
+    border: tall #f85149;
+}
+
+Button:focus {
+    border: tall #58a6ff;
+    text-style: bold;
+}
+
+Button:hover {
+    background: #30363d;
+}
+
 .modal-btn {
-    margin-left: 2;
+    margin-left: 1;
+    min-width: 12;
+    height: 3;
 }
 
 .form-label {

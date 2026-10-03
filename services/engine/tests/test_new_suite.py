@@ -326,17 +326,47 @@ async def test_interactive_model_config_modal():
         btn_custom.press()
         await pilot.pause()
 
-        # Fill custom model
-        model_input = modal.query_one("#inp-cfg-model", Input)
-        model_input.value = "anthropic/claude-3.5-haiku"
+        # Fill custom model using Name, Model ID, API Key, Base URL
+        name_input = modal.query_one("#inp-cfg-name", Input)
+        name_input.value = "my-custom-endpoint"
 
-        # Apply and activate
+        model_input = modal.query_one("#inp-cfg-model", Input)
+        model_input.value = "deepseek/deepseek-chat"
+
+        key_input = modal.query_one("#inp-cfg-key", Input)
+        key_input.value = "sk-custom-secret-123"
+
+        base_input = modal.query_one("#inp-cfg-base", Input)
+        base_input.value = "https://api.deepseek.com/v1"
+
+        # Apply and activate ("Save & Select")
         btn_save = modal.query_one("#btn-save-activate", Button)
         btn_save.press()
         await pilot.pause()
-        assert "claude-3.5-haiku" in pilot.app.provider_mgr.get_active_config().model
 
-        # 3. Test inline /config set commands
+        active_cfg = pilot.app.provider_mgr.get_active_config()
+        assert active_cfg.name == "my-custom-endpoint"
+        assert active_cfg.model == "deepseek/deepseek-chat"
+        assert active_cfg.api_key == "sk-custom-secret-123"
+        assert active_cfg.api_base == "https://api.deepseek.com/v1"
+
+        # 3. Verify it is now in the OptionList and can be selected
+        pilot.app.handle_user_input("/model")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, ModelPickerModal)
+        modal = pilot.app.screen
+        opt_list = modal.query_one("#model-option-list", OptionList)
+        assert any("my-custom-endpoint" in opt.prompt for opt in opt_list._options)
+        modal.dismiss(None)
+        await pilot.pause()
+
+        # 4. Test /model add command
+        pilot.app.handle_user_input("/model add fast-qwen qwen/qwen-2.5 sk-test https://api.together.xyz/v1")
+        await pilot.pause()
+        assert pilot.app.provider_mgr.active_provider_name == "fast-qwen"
+        assert pilot.app.provider_mgr.get_active_config().api_base == "https://api.together.xyz/v1"
+
+        # 5. Test inline /config set commands
         pilot.app.handle_user_input("/config set model deepseek/deepseek-r1:free")
         await pilot.pause()
         assert pilot.app.provider_mgr.get_active_config().model == "deepseek/deepseek-r1:free"
@@ -345,7 +375,7 @@ async def test_interactive_model_config_modal():
         await pilot.pause()
         assert pilot.app.provider_mgr.get_active_config().temperature == 0.5
 
-        # 4. Test /config free instant switch
+        # 6. Test /config free instant switch
         pilot.app.handle_user_input("/config free")
         await pilot.pause()
         assert pilot.app.provider_mgr.active_provider_name == "openrouter-free"

@@ -131,25 +131,43 @@ class ScopeForgeTUIApp(App):
             self.action_show_help()
 
         elif action == "/model":
-            if len(parts) > 1:
-                target = parts[1]
-                if target.lower() in ("free", "openrouter/free", "openrouter:free") or (target.lower() == "openrouter" and len(parts) > 2 and parts[2].strip().lower() == "free"):
+            tokens = cmd.strip().split()
+            if len(tokens) > 1:
+                target = tokens[1]
+                if target.lower() == "add" and len(tokens) >= 4:
+                    # /model add <name> <model_id> [api_key] [base_url]
+                    m_name = tokens[2]
+                    m_id = tokens[3]
+                    m_key = tokens[4] if len(tokens) > 4 else None
+                    m_base = tokens[5] if len(tokens) > 5 else None
+                    cfg = self.provider_mgr.add_custom_provider(
+                        name=m_name,
+                        model=m_id,
+                        api_key=m_key,
+                        api_base=m_base,
+                        set_active=True,
+                    )
+                    self._sync_header()
+                    chat.add_agent_message(
+                        "Supervisor",
+                        f"✓ Added & activated custom model: **{m_name}** (`{m_id}`) at `{m_base or 'default endpoint'}`."
+                    )
+                    return
+                elif target.lower() in ("free", "openrouter/free", "openrouter:free") or (target.lower() == "openrouter" and len(tokens) > 2 and tokens[2].strip().lower() == "free"):
                     self.provider_mgr.set_active_provider("openrouter-free")
                     chat.add_agent_message("Supervisor", "✓ Switched active LLM to OpenRouter Free tier (**openrouter/free**).")
                     self._sync_header()
-                elif target.lower() == "openrouter" and len(parts) > 2:
-                    model_id = parts[2].strip()
+                elif target.lower() == "openrouter" and len(tokens) > 2:
+                    model_id = tokens[2].strip()
                     cfg_name = f"openrouter-{model_id.replace('/', '-').split(':')[0]}"
-                    from ..llm_providers.models import LLMConfig, ProviderType
-                    cfg = LLMConfig(
+                    self.provider_mgr.add_custom_provider(
                         name=cfg_name,
-                        provider=ProviderType.OPENROUTER,
                         model=model_id,
                         api_base="https://openrouter.ai/api/v1",
+                        provider="openrouter",
                         temperature=0.1,
+                        set_active=True,
                     )
-                    self.provider_mgr.register_provider(cfg)
-                    self.provider_mgr.set_active_provider(cfg_name)
                     chat.add_agent_message("Supervisor", f"✓ Configured & switched to OpenRouter model: **{model_id}** (`{cfg_name}`).")
                     self._sync_header()
                 elif self.provider_mgr.set_active_provider(target):
@@ -159,7 +177,7 @@ class ScopeForgeTUIApp(App):
                     chat.add_agent_message(
                         "Supervisor",
                         f"✗ Provider '{target}' not found. Available: {', '.join([p.name for p in self.provider_mgr.list_providers()])}\n\n"
-                        "*Tip:* To use any OpenRouter model on the fly, type `/model openrouter <model_id>` (e.g. `/model openrouter deepseek/deepseek-r1`)."
+                        "*Tip:* To add a custom model, use `/model add <name> <model_id> [key] [base_url]` or press `/model` to configure in UI."
                     )
             else:
                 self.action_pick_model()
@@ -274,6 +292,25 @@ class ScopeForgeTUIApp(App):
                 chat.add_agent_message("Supervisor", "✓ Active configuration reset to default OpenRouter Free tier and PLAN mode.")
                 return
 
+            elif subcmd == "add" and len(tokens) >= 4:
+                m_name = tokens[2]
+                m_id = tokens[3]
+                m_key = tokens[4] if len(tokens) > 4 else None
+                m_base = tokens[5] if len(tokens) > 5 else None
+                cfg = self.provider_mgr.add_custom_provider(
+                    name=m_name,
+                    model=m_id,
+                    api_key=m_key,
+                    api_base=m_base,
+                    set_active=True,
+                )
+                self._sync_header()
+                chat.add_agent_message(
+                    "Supervisor",
+                    f"✓ Added & activated custom model: **{m_name}** (`{m_id}`) at `{m_base or 'default endpoint'}`."
+                )
+                return
+
             elif subcmd == "key" and len(tokens) > 2:
                 new_key = tokens[2].strip()
                 self.provider_mgr.update_active_config(api_key=new_key)
@@ -373,6 +410,7 @@ class ScopeForgeTUIApp(App):
                 f"- **Active Skills**: `{', '.join(self.skill_mgr.active_skills) or 'None (auto-routing)'}`\n\n"
                 "**Fast Inline Commands (Claude Code / Open Code style):**\n"
                 "- `/model` or `/config model` : Open instant interactive switcher\n"
+                "- `/model add <name> <model_id> [key] [base_url]` : Add & activate custom model\n"
                 "- `/config set model <id>` : Switch active model (`deepseek/deepseek-r1:free`)\n"
                 "- `/config set key <api-key>` : Configure provider API key\n"
                 "- `/config set temp <float>` : Set temperature (`0.0` - `1.0`)\n"

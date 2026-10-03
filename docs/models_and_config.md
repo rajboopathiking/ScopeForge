@@ -22,8 +22,13 @@ ScopeForge features an ultra-responsive, keyboard-driven **Model Picker & Config
     - `[7]` **Groq Llama 3.3** (`llama-3.3-70b-versatile`) — `[ULTRA-FAST]`
     - `[8]` **Local Ollama** (`llama3:latest`) — `[LOCAL] [OFFLINE]`
 - **Arrow Keys & Enter**: Navigate up and down with <kbd>↑</kbd> / <kbd>↓</kbd> and hit <kbd>Enter</kbd> to activate.
-- **Custom Configuration View**:
-  - Press <kbd>9</kbd> or click **Custom** to configure any custom model ID, provider (`openrouter`, `anthropic`, `openai`, `ollama`, `groq`, `custom`), API key, custom base URL, and temperature in place.
+- **Custom Model Configuration View**:
+  - Press <kbd>9</kbd> or click **Add Custom (9)** to register any model using just **Name**, **Model ID**, **API Key**, and **Base URL**:
+    - **Model Name / Alias**: Descriptive name for the model (e.g. `my-deepseek`, `fast-qwen`, `local-vllm`).
+    - **Model Identifier / ID**: Target model string (e.g. `deepseek/deepseek-chat`, `gpt-4o`, `qwen/qwen-2.5`).
+    - **API Key**: API key (stored securely or leave blank to inherit from environment).
+    - **Base URL**: API endpoint URL (e.g. `https://api.deepseek.com/v1`, `https://openrouter.ai/api/v1`, `http://localhost:8000/v1`).
+  - Hit <kbd>Enter</kbd> or click **Save & Select**: The custom model is instantly added to your registered models, appears in the OptionList with a `[CUSTOM]` badge, and is immediately activated!
 
 ```
 ╭────────────────────────────────────────────────────────────────────────╮
@@ -39,23 +44,24 @@ ScopeForge features an ultra-responsive, keyboard-driven **Model Picker & Config
 │ │   [6] GPT-4o (openai/gpt-4o)                       [FRONTIER]      │ │
 │ │   [7] Groq Llama 3.3 (llama-3.3-70b-versatile)     [ULTRA-FAST]    │ │
 │ │   [8] Local Ollama (llama3:latest)                 [LOCAL]         │ │
-│ │   [9] ⚙️  Custom Provider & Model Settings...                       │ │
+│ │   [9] my-deepseek (deepseek/deepseek-chat)         [CUSTOM]        │ │
+│ │   [10] ➕ Add Custom Model (Name, Model, Key, Base URL)...          │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
-│ [ Activate (Enter) ]         [ Custom (9) ]         [ Cancel (Esc) ]   │
+│ [ Select (Enter) ]           [ Add Custom (9) ]       [ Cancel (Esc) ] │
 ╰────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### B. Via Fast Inline Slash Commands
 Configure anything without leaving the conversation stream:
 ```text
-/config                                          # Display active configuration dashboard
+/model add <name> <model_id> [key] [base_url]    # Add and activate custom model
+/model my-deepseek                               # Switch to custom model by name
 /config set model deepseek/deepseek-r1:free      # Switch active model on the fly
 /config set key sk-or-v1-...                     # Set or update provider API key
 /config set temp 0.2                             # Set sampling temperature
 /config set mode live                            # Change guardrail mode (plan|artifacts|live)
 /config free                                     # Instant switch to zero-cost OpenRouter free tier
 /config reset                                    # Reset to default configuration
-/model openrouter deepseek/deepseek-r1           # Direct switch via /model
 ```
 
 ### C. Via Configuration File (`.scopeforge/providers.yaml`)
