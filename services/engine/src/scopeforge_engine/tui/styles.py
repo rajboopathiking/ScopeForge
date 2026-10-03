@@ -72,8 +72,8 @@ ModalScreen {
 }
 
 #modal-dialog {
-    width: 75%;
-    height: 75%;
+    width: 85%;
+    height: 85%;
     background: #161b22;
     border: thick #58a6ff;
     padding: 1 2;
@@ -93,14 +93,75 @@ ModalScreen {
     overflow-y: scroll;
 }
 
-#modal-buttons {
+#modal-buttons, #modal-buttons-select, #modal-buttons-config {
     height: 3;
     dock: bottom;
     layout: horizontal;
     align: right middle;
+    margin-top: 1;
 }
 
 .modal-btn {
     margin-left: 2;
+}
+
+.form-label {
+    color: #58a6ff;
+    text-style: bold;
+    margin-top: 1;
+    margin-bottom: 0;
+}
+
+.form-section-title {
+    color: #e6edf3;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.tab-help {
+    color: #8b949e;
+    margin-bottom: 1;
+}
+
+#preset-container {
+    layout: horizontal;
+    height: auto;
+    margin-bottom: 1;
+}
+
+.preset-btn {
+    margin-right: 1;
+    min-width: 14;
+    height: 1;
+}
+
+#config-form-scroll {
+    height: 1fr;
+    overflow-y: auto;
+    padding-right: 1;
+}
+
+.form-row {
+    layout: horizontal;
+    height: auto;
+}
+
+.half-col {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#cfg-status-msg {
+    color: #3fb950;
+    text-style: bold;
+    margin-top: 1;
+}
+
+Select {
+    margin-bottom: 1;
+}
+
+Input {
+    margin-bottom: 1;
 }
 """

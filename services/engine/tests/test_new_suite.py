@@ -294,4 +294,40 @@ async def test_general_llm_qa():
     assert len(content) > 0
 
 
+@pytest.mark.asyncio
+async def test_interactive_model_config_modal():
+    from scopeforge_engine.tui.app import ScopeForgeTUIApp
+    from scopeforge_engine.tui.screens.model_screen import ModelPickerModal
+    from textual.widgets import Button, Input
+    app = ScopeForgeTUIApp()
+    async with app.run_test() as pilot:
+        # Open model screen via /config model
+        pilot.app.handle_user_input("/config model")
+        await pilot.pause()
+        assert isinstance(pilot.app.screen, ModelPickerModal)
+        modal = pilot.app.screen
+
+        # Click OpenRouter Free preset button
+        btn = modal.query_one("#btn-pre-or-free", Button)
+        btn.press()
+        await pilot.pause()
+
+        name_input = modal.query_one("#inp-cfg-name", Input)
+        assert name_input.value == "openrouter-free"
+
+        model_input = modal.query_one("#inp-cfg-model", Input)
+        assert model_input.value == "openrouter/free"
+
+        # Click Save to config only
+        save_btn = modal.query_one("#btn-save-only", Button)
+        save_btn.press()
+        await pilot.pause()
+        assert "openrouter-free" in pilot.app.provider_mgr.providers
+
+        # Close modal
+        modal.dismiss(None)
+        await pilot.pause()
+
+
+
 

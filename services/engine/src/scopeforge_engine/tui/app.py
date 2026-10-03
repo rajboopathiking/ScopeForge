@@ -253,6 +253,9 @@ class ScopeForgeTUIApp(App):
                 chat.add_agent_message("Supervisor", f"🔌 **Model Context Protocol (MCP) Servers:**\n\n{s_list}\n\n*Commands: `/mcp add <name> <cmd>`, `/mcp enable <name>`, `/mcp disable <name>`*")
 
         elif action == "/config":
+            if len(parts) > 1 and parts[1].lower() in ("model", "models", "provider", "providers"):
+                self.action_pick_model()
+                return
             active_cfg = self.provider_mgr.get_active_config()
             cfg_text = (
                 "⚙️ **Active ScopeForge Configuration:**\n\n"
@@ -263,7 +266,8 @@ class ScopeForgeTUIApp(App):
                 f"- **Authorized Scopes**: `{', '.join(self.current_scope)}`\n"
                 f"- **RAG Store**: LlamaIndex ({len(self.rag.documents)} documents indexed)\n"
                 f"- **Active Skills**: `{', '.join(self.skill_mgr.active_skills) or 'None (auto-detection active)'}`\n"
-                f"- **Audit Logging**: `.scopeforge/audit.jsonl` (Active SHA256 chain)\n"
+                f"- **Audit Logging**: `.scopeforge/audit.jsonl` (Active SHA256 chain)\n\n"
+                "*Tip: Type `/config model` or `/model` to configure providers & models directly in the TUI.*"
             )
             chat.add_agent_message("Supervisor", cfg_text)
 
