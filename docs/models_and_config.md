@@ -9,53 +9,56 @@ ScopeForge provides a model-agnostic agent harness supporting hosted frontier mo
 You can configure and switch models in **three ways**:
 
 ### A. Via Claude Code / Open Code Style Fast Model Switcher (`/model` or `/config model`)
-ScopeForge features an ultra-responsive, keyboard-driven **Model Picker & Config Modal** inspired by Claude Code and Open Code:
+ScopeForge features an ultra-responsive, keyboard-driven **Model Picker & Config Modal** inspired by Claude Code and Open Code. `/model` always opens the **selection list first**; the custom form is a secondary view:
 - Open instantly with `/model` or `/config model` in the prompt bar.
-- **Instant Numeric Shortcuts**:
-  - Simply press <kbd>1</kbd>–<kbd>8</kbd> on your keyboard to immediately activate a preset and return to your mission:
-    - `[1]` **OpenRouter Free** (`openrouter/free`) — `[FREE] [AUTO]`
-    - `[2]` **DeepSeek R1 Free** (`deepseek/deepseek-r1:free`) — `[FREE] [REASONING]`
-    - `[3]` **Llama 3.3 70B Free** (`meta-llama/...:free`) — `[FREE] [FAST]`
-    - `[4]` **Gemini 2.0 Flash Free** (`google/...:free`) — `[FREE] [FAST]`
-    - `[5]` **Claude 3.5 Sonnet** (`anthropic/claude-3.5-sonnet`) — `[FRONTIER]`
-    - `[6]` **GPT-4o** (`openai/gpt-4o`) — `[FRONTIER]`
-    - `[7]` **Groq Llama 3.3** (`llama-3.3-70b-versatile`) — `[ULTRA-FAST]`
-    - `[8]` **Local Ollama** (`llama3:latest`) — `[LOCAL] [OFFLINE]`
-- **Arrow Keys & Enter**: Navigate up and down with <kbd>↑</kbd> / <kbd>↓</kbd> and hit <kbd>Enter</kbd> to activate.
+- **Selection list contents**: featured presets first, then other registered `[STOCK]` models, then your `[CUSTOM]` models, then `[+] Add Custom Model...` as the last row. Only true user-added models carry `[CUSTOM]` — stock models are never mislabeled.
+- **Filter**: type in `Type to filter models...` to narrow the list live (e.g. `nemotron`, `qwen`, `ollama`).
+- **Instant Numeric Shortcuts**: press <kbd>1</kbd>–<kbd>9</kbd> to immediately activate one of the **first 9 visible rows**:
+  - `[1]` **OpenRouter Free** (`openrouter/free`) — `[FREE] [AUTO]`
+  - `[2]` **Nemotron 550B Free** (`nvidia/...:free`) — `[FREE] [ULTRA-FAST]`
+  - `[3]` **Apodex 1.1 Mini Free** (`apodex/...:free`) — `[FREE] [FAST]`
+  - `[4]` **Qwen 3.8 27B Free** (`qwen/...:free`) — `[FREE] [CODING]`
+  - `[5]` **Claude 3.5 Sonnet** (`anthropic/claude-3.5-sonnet`) — `[FRONTIER]`
+  - `[6]` **GPT-4o** (`openai/gpt-4o`) — `[FRONTIER]`
+  - `[7]` **Groq Llama 3.3** (`llama-3.3-70b-versatile`) — `[ULTRA-FAST]`
+  - `[8]` **Local Ollama** (`llama3:latest`) — `[LOCAL] [OFFLINE]`
+- Rows beyond the first 9 show `[·]` — use <kbd>↑</kbd> / <kbd>↓</kbd> + <kbd>Enter</kbd> for those.
 - **Custom Model Configuration View**:
-  - Press <kbd>9</kbd> or click **Add Custom (9)** to register any model using just **Name**, **Model ID**, **API Key**, and **Base URL**:
-    - **Model Name / Alias**: Descriptive name for the model (e.g. `my-deepseek`, `fast-qwen`, `local-vllm`).
-    - **Model Identifier / ID**: Target model string (e.g. `deepseek/deepseek-chat`, `gpt-4o`, `qwen/qwen-2.5`).
-    - **API Key**: API key (stored securely or leave blank to inherit from environment).
-    - **Base URL**: API endpoint URL (e.g. `https://api.deepseek.com/v1`, `https://openrouter.ai/api/v1`, `http://localhost:8000/v1`).
-  - Hit <kbd>Enter</kbd> or click **Save & Select**: The custom model is instantly added to your registered models, appears in the OptionList with a `[CUSTOM]` badge, and is immediately activated!
+  - From the list, click **Add Custom (+)**, select the `[+] Add Custom Model...` row, or press <kbd>+</kbd> / <kbd>c</kbd> to open the custom form (typing in the filter box never triggers these shortcuts).
+  - Register any model with **Name**, **Provider**, **Model ID***, **API Key***, **Base URL*** (plus optional Temperature / Max Tokens):
+    - **Alias / Name**: e.g. `my-deepseek`, `fast-qwen`, `local-vllm` (auto-generated if blank).
+    - **Model ID**: e.g. `deepseek/deepseek-chat`, `gpt-4o`, `qwen/qwen-2.5-coder-32b-instruct`.
+    - **API Key**: pasted key, or `env:VAR_NAME` (never persisted; read from env at runtime), or blank for Ollama/local and env-inherited keys.
+    - **Base URL**: e.g. `https://api.deepseek.com/v1`, `https://openrouter.ai/api/v1`, `http://localhost:11434/v1`.
+  - Click **Test** to validate without saving, or **Save & Select** (or <kbd>Enter</kbd>) to persist to `.scopeforge/providers.yaml`, mark `[CUSTOM]`, and activate immediately. `Back` / <kbd>Esc</kbd> returns to the selection list.
+  - If the new model has no usable key/endpoint, activation warns `⚠️ Running offline: [MOCK fallback: ...]` instead of failing silently.
 
 ```
 ╭────────────────────────────────────────────────────────────────────────╮
 │ ⚡ Select or Configure Model                                          │
-│                                                                        │
-│ Navigate with ↑/↓ + Enter, or press 1-9 to select directly:            │
+│ Type to filter models...                                              │
+│ Type to filter (N models) · 1-9 selects first 9 · ↑/↓ + Enter · + custom│
 │ ┌────────────────────────────────────────────────────────────────────┐ │
-│ │ ● [ACTIVE] [1] OpenRouter Free (openrouter/free)  [FREE] [AUTO]    │ │
-│ │   [2] DeepSeek R1 Free (deepseek/deepseek-r1:free) [REASONING]     │ │
-│ │   [3] Llama 3.3 70B Free (meta-llama/...:free)     [FAST]          │ │
-│ │   [4] Gemini 2.0 Flash Free (google/...:free)      [FAST]          │ │
-│ │   [5] Claude 3.5 Sonnet (anthropic/claude-3.5)     [FRONTIER]      │ │
-│ │   [6] GPT-4o (openai/gpt-4o)                       [FRONTIER]      │ │
-│ │   [7] Groq Llama 3.3 (llama-3.3-70b-versatile)     [ULTRA-FAST]    │ │
-│ │   [8] Local Ollama (llama3:latest)                 [LOCAL]         │ │
-│ │   [9] my-deepseek (deepseek/deepseek-chat)         [CUSTOM]        │ │
-│ │   [10] ➕ Add Custom Model (Name, Model, Key, Base URL)...          │ │
+│ │ ● [ACTIVE] [1] OpenRouter Free (openrouter/free)  [FREE] [AUTO]   │ │
+│ │   [2] Nemotron 550B Free (...)                    [FREE] [ULTRA-FAST]│ │
+│ │   [3] Apodex 1.1 Mini Free (...)                  [FREE] [FAST]    │ │
+│ │   [4] Qwen 3.8 27B Free (...)                     [FREE] [CODING]  │ │
+│ │   [5] Claude 3.5 Sonnet (...)                     [FRONTIER]       │ │
+│ │   [6] GPT-4o (...)                                [FRONTIER]       │ │
+│ │   [7] Groq Llama 3.3 (...)                        [ULTRA-FAST]     │ │
+│ │   [8] Local Ollama (...)                          [LOCAL] [OFFLINE]│ │
+│ │   [·] my-deepseek (deepseek/deepseek-chat)        [CUSTOM]         │ │
+│ │   [+] ➕ Add Custom Model (Name, Model, API Key, Base URL)...       │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
-│ [ Select (Enter) ]           [ Add Custom (9) ]       [ Cancel (Esc) ] │
+│ [ Select (Enter) ]           [ Add Custom (+) ]       [ Cancel (Esc) ] │
 ╰────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### B. Via Fast Inline Slash Commands
 Configure anything without leaving the conversation stream:
 ```text
-/model add <name> <model_id> [key] [base_url]    # Add and activate custom model
-/model my-deepseek                               # Switch to custom model by name
+/model add <name> <model_id> [key|env:VAR] [base_url]  # Add and activate custom model (base auto-filled for known platforms)
+/model my-deepseek                                     # Switch to custom model by name
 /config set model deepseek/deepseek-r1:free      # Switch active model on the fly
 /config set key sk-or-v1-...                     # Set or update provider API key
 /config set temp 0.2                             # Set sampling temperature

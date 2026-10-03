@@ -35,14 +35,18 @@ def create_chat_model(config: LLMConfig) -> BaseChatModel:
             if not api_key:
                 # Return mock if key is missing
                 return MockSecOpsChatModel(model_name=f"[MOCK fallback: missing ANTHROPIC_API_KEY] {config.model}")
-            return ChatAnthropic(
+            kwargs: dict[str, Any] = dict(
                 model=config.model,
                 api_key=api_key,
                 temperature=config.temperature,
                 max_tokens=config.max_tokens,
                 streaming=config.streaming,
-                **config.extra_params,
             )
+            # Honour custom proxy base URLs (previously silently dropped).
+            if config.api_base and config.api_base.strip():
+                kwargs["anthropic_api_url"] = config.api_base.strip().rstrip("/")
+            kwargs.update(config.extra_params)
+            return ChatAnthropic(**kwargs)
         except Exception:
             return MockSecOpsChatModel(model_name=f"[MOCK fallback] {config.model}")
 
@@ -116,6 +120,20 @@ def create_chat_model(config: LLMConfig) -> BaseChatModel:
                 return MockSecOpsChatModel(
                     model_name=f"[MOCK fallback: custom model missing key+base_url] {config.model}"
                 )
+            if provider == ProviderType.CUSTOM and not api_key:
+                base = (base_url or "").strip()
+                is_local = (
+                    not base
+                    or "localhost" in base
+                    or "127.0.0.1" in base
+                    or "11434" in base
+                )
+                if not is_local:
+                    # Never silently use sk-dummy against a remote endpoint —
+                    # surface a clear mock marker instead of an opaque 401.
+                    return MockSecOpsChatModel(
+                        model_name=f"[MOCK fallback: custom '{config.name}' missing API key for {base or 'remote endpoint'}] {config.model}"
+                    )
 
             return ChatOpenAI(
                 model=config.model,

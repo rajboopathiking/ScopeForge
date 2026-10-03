@@ -116,6 +116,75 @@ class ScopeForgeTUIApp(App):
         except Exception:
             pass
 
+    def _autofill_custom_base(self, model_id: str, base: Optional[str]) -> Optional[str]:
+        if base and base.strip():
+            return base.strip()
+        low = (model_id or "").lower()
+        if "openrouter" in low:
+            return "https://openrouter.ai/api/v1"
+        if "groq" in low:
+            return "https://api.groq.com/openai/v1"
+        if low.startswith("gpt-") or low.startswith("o1") or "openai" in low:
+            return "https://api.openai.com/v1"
+        if "claude" in low or "anthropic" in low:
+            return "https://api.anthropic.com/v1"
+        if "ollama" in low:
+            return "http://localhost:11434/v1"
+        return None
+
+    def _slash_add_custom(self, m_name: str, m_id: str, m_key: Optional[str], m_base: Optional[str]):
+        """Shared `/model add` + `/config add` path: env:VAR-aware, auto-fills base.
+
+        Returns (cfg, error_message). Never raises for validation errors.
+        """
+        import os as _os
+        if not (m_id or "").strip():
+            return None, "✗ Model ID * is required. Usage: `/model add <name> <model_id> [key|env:VAR] [base_url]`"
+        m_base = self._autofill_custom_base(m_id, m_base)
+        if not m_base:
+            return None, (
+                "✗ API Base URL * is required. Usage: `/model add <name> <model_id> [key] [base_url]`\n"
+                "Example: `/model add my-deepseek deepseek/deepseek-chat sk-... https://api.deepseek.com/v1`"
+            )
+        if not (m_base.startswith("http://") or m_base.startswith("https://")):
+            return None, f"✗ Invalid base URL '{m_base}'. Must start with http(s)://"
+        is_local = "localhost" in m_base or "127.0.0.1" in m_base
+        key_is_env_ref = bool(m_key and str(m_key).strip().lower().startswith("env:"))
+        if key_is_env_ref:
+            try:
+                self.provider_mgr.resolve_key_ref(m_key)
+            except ValueError as e:
+                return None, f"✗ {e}"
+        has_env_key = any(_os.getenv(v) for v in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+        ))
+        if not m_key and not is_local and not has_env_key:
+            return None, (
+                "✗ API Key * is required (except Ollama/local). Usage: `/model add <name> <model_id> [key|env:VAR] [base_url]`\n"
+                "Tip: use `/model` UI which marks api_key, base_url, model_name as * required."
+            )
+        try:
+            cfg = self.provider_mgr.add_custom_provider(
+                name=m_name, model=m_id, api_key=m_key, api_base=m_base, set_active=True,
+            )
+        except ValueError as e:
+            return None, f"✗ {e}"
+        except Exception as e:
+            return None, f"✗ Save failed: {e}"
+        return cfg, ""
+
+    def _active_model_warning(self) -> str:
+        """Empty string when live; otherwise a clear mock/offline suffix."""
+        try:
+            chat = self.provider_mgr.get_chat_model()
+            marker = getattr(chat, "model_name", "")
+            if isinstance(marker, str) and marker.startswith("[MOCK fallback"):
+                return f"\n⚠️ Running offline: {marker[:160]}"
+        except Exception:
+            pass
+        return ""
+
     def handle_user_input(self, text: str):
         text = text.strip()
         if not text:
@@ -139,44 +208,24 @@ class ScopeForgeTUIApp(App):
             tokens = cmd.strip().split()
             if len(tokens) > 1:
                 target = tokens[1]
-                if target.lower() == "add" and len(tokens) >= 4:
-                    # /model add <name> <model_id> <api_key> <base_url>
-                    # api_key, base_url, model_id are essential for custom models
-                    # (api_key may be omitted only for Ollama/local or when env provides it).
+                if target.lower() == "add":
+                    # /model add <name> <model_id> [key|env:VAR] [base_url]
+                    # (base auto-filled for known platforms, key may come from env).
+                    if len(tokens) < 4:
+                        chat.add_agent_message("Supervisor", "Usage: `/model add <name> <model_id> [key|env:VAR] [base_url]`")
+                        return
                     m_name = tokens[2]
                     m_id = tokens[3] if len(tokens) > 3 else ""
                     m_key = tokens[4] if len(tokens) > 4 else None
                     m_base = tokens[5] if len(tokens) > 5 else None
-                    if not m_id.strip():
-                        chat.add_agent_message("Supervisor", "✗ Model ID * is required. Usage: `/model add <name> <model_id> <api_key> <base_url>`")
-                        return
-                    if not m_base:
-                        chat.add_agent_message("Supervisor", "✗ API Base URL * is required. Usage: `/model add <name> <model_id> <api_key> <base_url>`\nExample: `/model add my-deepseek deepseek/deepseek-chat sk-... https://api.deepseek.com/v1`")
-                        return
-                    if not (m_base.startswith("http://") or m_base.startswith("https://")):
-                        chat.add_agent_message("Supervisor", f"✗ Invalid base URL '{m_base}'. Must start with http(s)://")
-                        return
-                    is_local = "localhost" in m_base or "127.0.0.1" in m_base
-                    import os as _os2
-                    has_env_key = any(_os2.getenv(v) for v in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"))
-                    if not m_key and not is_local and not has_env_key:
-                        chat.add_agent_message("Supervisor", "✗ API Key * is required (except Ollama/local). Usage: `/model add <name> <model_id> <api_key> <base_url>`\nTip: use `/model` UI which marks api_key, base_url, model_name as * required.")
-                        return
-                    try:
-                        cfg = self.provider_mgr.add_custom_provider(
-                            name=m_name,
-                            model=m_id,
-                            api_key=m_key,
-                            api_base=m_base,
-                            set_active=True,
-                        )
-                    except ValueError as e:
-                        chat.add_agent_message("Supervisor", f"✗ {e}")
+                    cfg, err = self._slash_add_custom(m_name, m_id, m_key, m_base)
+                    if err:
+                        chat.add_agent_message("Supervisor", err)
                         return
                     self._sync_header()
                     chat.add_agent_message(
                         "Supervisor",
-                        f"✓ Added & activated custom model: **{cfg.name}** (`{cfg.model}`) at `{cfg.api_base or 'default endpoint'}`."
+                        f"✓ Added & activated custom model: **{cfg.name}** (`{cfg.model}`) at `{cfg.api_base or 'default endpoint'}`.{self._active_model_warning()}"
                     )
                     return
                 elif target.lower() in ("free", "openrouter/free", "openrouter:free", "openrouter/auto") or (target.lower() == "openrouter" and len(tokens) > 2 and tokens[2].strip().lower() == "free"):
@@ -187,18 +236,22 @@ class ScopeForgeTUIApp(App):
                 elif target.lower() == "openrouter" and len(tokens) > 2:
                     model_id = tokens[2].strip()
                     cfg_name = f"openrouter-{model_id.replace('/', '-').split(':')[0]}"
-                    self.provider_mgr.add_custom_provider(
-                        name=cfg_name,
-                        model=model_id,
-                        api_base="https://openrouter.ai/api/v1",
-                        provider="openrouter",
-                        temperature=0.1,
-                        set_active=True,
-                    )
-                    chat.add_agent_message("Supervisor", f"✓ Configured & switched to OpenRouter model: **{model_id}** (`{cfg_name}`).")
+                    try:
+                        self.provider_mgr.add_custom_provider(
+                            name=cfg_name,
+                            model=model_id,
+                            api_base="https://openrouter.ai/api/v1",
+                            provider="openrouter",
+                            temperature=0.1,
+                            set_active=True,
+                        )
+                    except ValueError as e:
+                        chat.add_agent_message("Supervisor", f"✗ {e}")
+                        return
+                    chat.add_agent_message("Supervisor", f"✓ Configured & switched to OpenRouter model: **{model_id}** (`{cfg_name}`).{self._active_model_warning()}")
                     self._sync_header()
                 elif self.provider_mgr.set_active_provider(target):
-                    chat.add_agent_message("Supervisor", f"✓ Switched active LLM model to **{self.provider_mgr.active_provider_name}**.")
+                    chat.add_agent_message("Supervisor", f"✓ Switched active LLM model to **{self.provider_mgr.active_provider_name}**.{self._active_model_warning()}")
                     self._sync_header()
                 else:
                     chat.add_agent_message(
@@ -341,36 +394,14 @@ class ScopeForgeTUIApp(App):
                 m_id = tokens[3] if len(tokens) > 3 else ""
                 m_key = tokens[4] if len(tokens) > 4 else None
                 m_base = tokens[5] if len(tokens) > 5 else None
-                if not m_id.strip():
-                    chat.add_agent_message("Supervisor", "✗ Model ID * is required. Usage: `/config add <name> <model_id> <api_key> <base_url>`")
-                    return
-                if not m_base:
-                    chat.add_agent_message("Supervisor", "✗ API Base URL * is required. Usage: `/config add <name> <model_id> <api_key> <base_url>`")
-                    return
-                if not (m_base.startswith("http://") or m_base.startswith("https://")):
-                    chat.add_agent_message("Supervisor", f"✗ Invalid base URL '{m_base}'. Must start with http(s)://")
-                    return
-                is_local2 = "localhost" in m_base or "127.0.0.1" in m_base
-                import os as _os3
-                has_env2 = any(_os3.getenv(v) for v in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"))
-                if not m_key and not is_local2 and not has_env2:
-                    chat.add_agent_message("Supervisor", "✗ API Key * is required (except Ollama/local). Prefer `/model` UI where api_key, base_url, model_name are marked *.")
-                    return
-                try:
-                    cfg = self.provider_mgr.add_custom_provider(
-                        name=m_name,
-                        model=m_id,
-                        api_key=m_key,
-                        api_base=m_base,
-                        set_active=True,
-                    )
-                except ValueError as e:
-                    chat.add_agent_message("Supervisor", f"✗ {e}")
+                cfg, err = self._slash_add_custom(m_name, m_id, m_key, m_base)
+                if err:
+                    chat.add_agent_message("Supervisor", err)
                     return
                 self._sync_header()
                 chat.add_agent_message(
                     "Supervisor",
-                    f"✓ Added & activated custom model: **{cfg.name}** (`{cfg.model}`) at `{cfg.api_base or 'default endpoint'}`."
+                    f"✓ Added & activated custom model: **{cfg.name}** (`{cfg.model}`) at `{cfg.api_base or 'default endpoint'}`.{self._active_model_warning()}"
                 )
                 return
 
@@ -744,7 +775,7 @@ class ScopeForgeTUIApp(App):
             if model_name:
                 self._sync_header()
                 chat = self.query_one(ChatStream)
-                chat.add_agent_message("Supervisor", f"✓ Switched active model to **{model_name}**.")
+                chat.add_agent_message("Supervisor", f"✓ Switched active model to **{model_name}**.{self._active_model_warning()}")
         self.push_screen(ModelPickerModal(self.provider_mgr), _on_model_picked)
 
     def action_toggle_sidebar(self):

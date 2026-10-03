@@ -32,6 +32,7 @@ class ModelPickerModal(ModalScreen[str]):
         self.provider_mgr = provider_mgr
         self.show_custom_form = show_custom
         self.option_targets: List[str] = []
+        self._filter_text: str = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="model-picker-dialog"):
@@ -39,11 +40,12 @@ class ModelPickerModal(ModalScreen[str]):
 
             # LIST VIEW (Default fast model switcher)
             with Vertical(id="view-list", classes="" if not self.show_custom_form else "-hidden"):
-                yield Label("Navigate with ↑/↓ + Enter, or press 1-9 to select directly:", classes="modal-hint")
+                yield Input(placeholder="Type to filter models... (Claude Code style)", id="inp-model-filter")
+                yield Label("Navigate with ↑/↓ + Enter, or press 1-9 to select directly:", classes="modal-hint", id="model-hint")
                 yield OptionList(id="model-option-list")
                 with Horizontal(id="modal-buttons-select"):
                     yield Button("Select (Enter)", variant="primary", id="btn-select", classes="modal-btn")
-                    yield Button("Add Custom (9)", variant="success", id="btn-go-custom", classes="modal-btn")
+                    yield Button("Add Custom (+)", variant="success", id="btn-go-custom", classes="modal-btn")
                     yield Button("Cancel (Esc)", variant="default", id="btn-cancel", classes="modal-btn")
 
             # CUSTOM CONFIG VIEW — api_key, base_url, model_name are essential
@@ -93,44 +95,82 @@ class ModelPickerModal(ModalScreen[str]):
                     yield Button("Cancel", variant="default", id="btn-cancel-custom", classes="modal-btn")
 
     def on_mount(self):
-        self._populate_options()
+        self._populate_options(self._filter_text)
+        # Keep 1-9 fast path working: focus the list, not the filter.
+        # Users click/Tab into the filter only when they want to search.
+        if not self.show_custom_form:
+            try:
+                self.query_one("#model-option-list", OptionList).focus()
+            except Exception:
+                pass
 
-    def _populate_options(self):
+    def _catalog_rows(self):
+        """Ordered (name, label, badge) — featured presets, other stock, true customs."""
+        preset_ids = {m_id for m_id, _, _ in MODEL_PRESETS}
+        rows: List[Tuple[str, str, str]] = []
+        for m_id, label, tag in MODEL_PRESETS:
+            cfg = self.provider_mgr.providers.get(m_id)
+            if cfg is None:
+                rows.append((m_id, label, f"{tag} [MISSING]"))
+            else:
+                rows.append((m_id, f"{label} ({cfg.model})", tag))
+        # Other stock models (in registry, not featured, not custom, not mock).
+        for name in sorted(self.provider_mgr.providers.keys()):
+            if name in preset_ids or name == "mock-secops":
+                continue
+            if self.provider_mgr.is_custom_provider(name):
+                continue
+            cfg = self.provider_mgr.providers[name]
+            rows.append((name, f"{name} ({cfg.model})", "[STOCK]"))
+        # True user customs only — never mislabel stock as [CUSTOM].
+        for name in sorted(self.provider_mgr.providers.keys()):
+            if not self.provider_mgr.is_custom_provider(name):
+                continue
+            cfg = self.provider_mgr.providers[name]
+            rows.append((name, f"{name} ({cfg.model})", "[CUSTOM]"))
+        return rows
+
+    def _populate_options(self, filter_text: str = ""):
         opt_list = self.query_one("#model-option-list", OptionList)
         opt_list.clear_options()
 
         active_name = self.provider_mgr.active_provider_name
         self.option_targets = []
+        filt = (filter_text or "").strip().lower()
 
-        # 1. Presets (1 to 8)
-        preset_ids = set()
-        for idx, (m_id, label, tag) in enumerate(MODEL_PRESETS, start=1):
-            preset_ids.add(m_id)
-            # Exact match only. Previous `active_name in m_id` flagged
-            # `openrouter-free` active when `openrouter-free-deepseek` was set (and vice versa).
-            is_active = "● [ACTIVE] " if m_id == active_name else ""
-            display = f"[{idx}] {is_active}{label}  {tag}"
-            opt_list.add_option(Option(display, id=m_id))
-            self.option_targets.append(m_id)
+        rows = self._catalog_rows()
+        if filt:
+            kept = []
+            for name, label, badge in rows:
+                cfg = self.provider_mgr.providers.get(name)
+                hay = f"{name} {label} {badge} {cfg.model if cfg else ''} {cfg.provider.value if cfg else ''}".lower()
+                if filt in hay:
+                    kept.append((name, label, badge))
+            rows = kept
 
-        # 2. Custom Configured Models
-        custom_list = [
-            (name, cfg) for name, cfg in self.provider_mgr.providers.items()
-            if name not in preset_ids and name != "mock-secops"
-        ]
-
-        curr_idx = len(self.option_targets) + 1
-        for name, cfg in custom_list:
+        for idx, (name, label, badge) in enumerate(rows):
             is_active = "● [ACTIVE] " if name == active_name else ""
-            display = f"[{curr_idx}] {is_active}{name} ({cfg.model})  [CUSTOM]"
-            opt_list.add_option(Option(display, id=name))
+            # Only the first 9 rows get single-digit shortcuts. Deeper rows
+            # show [·] so users don't attempt two-digit entry (which the
+            # handler cannot support and previously mis-selected).
+            num = f"[{idx + 1}]" if idx < 9 else "[·]"
+            display = f"{num} {is_active}{label}  {badge}"
+            opt_list.add_option(Option(display, id=f"opt-{idx}"))
             self.option_targets.append(name)
-            curr_idx += 1
 
-        # 3. Add Custom Model Action
-        custom_shortcut = f"[{curr_idx}]" if curr_idx <= 9 else "[+]"
-        opt_list.add_option(Option(f"{custom_shortcut} ➕ Add Custom Model (Name, Model, API Key, Base URL)...", id="action-custom"))
+        # Add Custom action is always last, always reachable via [+] / button.
+        opt_list.add_option(Option("[+] ➕ Add Custom Model (Name, Model, API Key, Base URL)...", id="opt-action"))
         self.option_targets.append("action-custom")
+
+        # Dynamic hint so the shortcut contract is never a lie.
+        try:
+            hint = self.query_one("#model-hint", Label)
+            if len(self.option_targets) <= 10:
+                hint.update("Navigate with ↑/↓ + Enter, or press 1-9 to select directly:")
+            else:
+                hint.update(f"Type to filter ({len(rows)} models) · 1-9 selects first 9 · ↑/↓ + Enter for rest · + for custom:")
+        except Exception:
+            pass
 
         # Highlight active model if in list
         highlight_idx = 0
@@ -140,13 +180,42 @@ class ModelPickerModal(ModalScreen[str]):
                 break
         opt_list.highlighted = highlight_idx
 
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
-        opt_id = str(event.option_id)
-        if opt_id == "action-custom":
+    def _target_at(self, index: Optional[int]) -> Optional[str]:
+        if index is None:
+            return None
+        if 0 <= index < len(self.option_targets):
+            return self.option_targets[index]
+        return None
+
+    def _activate_target(self, target: Optional[str]) -> None:
+        if not target:
+            self.dismiss(None)
+            return
+        if target == "action-custom":
             self._switch_to_custom(True)
+            return
+        # Exact registry hit first; substring fallback lives in manager.
+        if target in self.provider_mgr.providers:
+            self.provider_mgr.set_active_provider(target)
+            self.dismiss(target)
+        elif not self.provider_mgr.set_active_provider(target):
+            self._populate_options(self._filter_text)
         else:
-            self.provider_mgr.set_active_provider(opt_id)
-            self.dismiss(opt_id)
+            self.dismiss(self.provider_mgr.active_provider_name)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
+        # Index-based lookup: custom names may contain spaces/slashes that
+        # are unsafe as Textual Option ids, so never trust option_id.
+        idx = getattr(event, "option_index", None)
+        target = self._target_at(idx)
+        if target is None:
+            opt_id = str(getattr(event, "option_id", "") or "")
+            # Legacy fallback for synthetic events in tests.
+            if opt_id and not opt_id.startswith("opt-"):
+                target = opt_id
+            elif opt_id == "opt-action":
+                target = "action-custom"
+        self._activate_target(target)
 
     def _switch_to_custom(self, to_custom: bool):
         self.show_custom_form = to_custom
@@ -162,27 +231,27 @@ class ModelPickerModal(ModalScreen[str]):
         else:
             view_custom.add_class("-hidden")
             view_list.remove_class("-hidden")
-            self._populate_options()
+            self._populate_options(self._filter_text)
             try:
                 self.query_one("#model-option-list", OptionList).focus()
             except Exception:
                 pass
+
+    def on_input_changed(self, event: Input.Changed):
+        # Claude Code style live filter — only for the picker search box.
+        try:
+            if event.input.id == "inp-model-filter" and not self.show_custom_form:
+                self._filter_text = event.value or ""
+                self._populate_options(self._filter_text)
+        except Exception:
+            pass
 
     def on_button_pressed(self, event: Button.Pressed):
         btn_id = event.button.id
 
         if btn_id == "btn-select":
             opt_list = self.query_one("#model-option-list", OptionList)
-            if opt_list.highlighted is not None:
-                option = opt_list.get_option_at_index(opt_list.highlighted)
-                opt_id = str(option.id)
-                if opt_id == "action-custom":
-                    self._switch_to_custom(True)
-                else:
-                    self.provider_mgr.set_active_provider(opt_id)
-                    self.dismiss(opt_id)
-            else:
-                self.dismiss(None)
+            self._activate_target(self._target_at(opt_list.highlighted))
 
         elif btn_id == "btn-go-custom":
             self._switch_to_custom(True)
@@ -200,8 +269,20 @@ class ModelPickerModal(ModalScreen[str]):
             self._test_custom_config()
 
     def on_input_submitted(self, event: Input.Submitted):
-        """Allow pressing Enter inside custom configuration inputs to save & activate immediately."""
-        self._save_and_activate_custom()
+        """Enter in filter selects highlighted; Enter in custom form saves."""
+        try:
+            input_id = getattr(event.input, "id", "")
+        except Exception:
+            input_id = ""
+        if input_id == "inp-model-filter" and not self.show_custom_form:
+            try:
+                opt_list = self.query_one("#model-option-list", OptionList)
+                self._activate_target(self._target_at(opt_list.highlighted))
+            except Exception:
+                pass
+            return
+        if self.show_custom_form:
+            self._save_and_activate_custom()
 
     def _read_custom_inputs(self) -> Tuple[str, str, Optional[str], str, str, float, int]:
         """Read raw custom-form inputs. Returns (name, model, key, base, provider, temp, max_tokens)."""
@@ -325,22 +406,34 @@ class ModelPickerModal(ModalScreen[str]):
         try:
             from ...llm_providers.factory import create_chat_model
             from ...llm_providers.models import LLMConfig as _LLMConfig
-            from ...llm_providers.models import ProviderType as _PT
 
-            ptype = provider if provider != "auto" else None
-            # Reuse manager inference when auto
-            tmp_cfg = self.provider_mgr.add_custom_provider(
-                name=f"__test__{name or 'tmp'}",
+            # Build an in-memory config only — never touch the registry or
+            # disk (previous version called add_custom_provider which wrote
+            # `__test__*` entries to providers.yaml).
+            tmp_name = f"__test__{name or 'tmp'}"
+            ptype = provider if provider not in (None, "auto") else None
+            # Reuse the manager's inference without persisting.
+            probe = self.provider_mgr.add_custom_provider(
+                name=tmp_name,
                 model=model,
                 api_key=resolved_key,
                 api_base=base,
-                provider=None if ptype in (None, "auto") else ptype,
+                provider=ptype,
                 temperature=temp,
                 max_tokens=max_tokens,
                 set_active=False,
             )
-            # Remove temp entry immediately (never persist test configs)
-            self.provider_mgr.providers.pop(tmp_cfg.name, None)
+            tmp_cfg = probe.model_copy()
+            # Roll back the probe from memory, custom set, and disk.
+            self.provider_mgr.providers.pop(tmp_name, None)
+            try:
+                self.provider_mgr.custom_provider_names.discard(tmp_name)
+            except Exception:
+                pass
+            try:
+                self.provider_mgr.save_config()
+            except Exception:
+                pass
             chat = create_chat_model(tmp_cfg)
             mock_marker = getattr(chat, "model_name", "")
             if isinstance(mock_marker, str) and mock_marker.startswith("[MOCK fallback"):
@@ -385,21 +478,33 @@ class ModelPickerModal(ModalScreen[str]):
             return
         self.dismiss(cfg.name)
 
+    def _filter_has_focus(self) -> bool:
+        try:
+            focused = getattr(self, "focused", None)
+            return bool(focused is not None and getattr(focused, "id", "") == "inp-model-filter")
+        except Exception:
+            return False
+
     def on_key(self, event):
         if event.key == "escape":
             if self.show_custom_form:
                 self._switch_to_custom(False)
             else:
                 self.dismiss(None)
-        elif not self.show_custom_form:
-            if event.key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
-                idx = int(event.key) - 1
-                if hasattr(self, "option_targets") and idx < len(self.option_targets):
-                    target = self.option_targets[idx]
-                    if target == "action-custom":
-                        self._switch_to_custom(True)
-                    else:
-                        self.provider_mgr.set_active_provider(target)
-                        self.dismiss(target)
-            elif event.key in ("+", "c", "C"):
-                self._switch_to_custom(True)
+            return
+        if self.show_custom_form:
+            return
+        # Never hijack typing inside the filter box (typing `c` or digits
+        # must filter, not jump/select — the previous bug).
+        if self._filter_has_focus():
+            return
+        if event.key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
+            # Single-digit fast path covers only the first 9 visible rows.
+            # Anything deeper requires ↑/↓ + Enter (labels show [·]).
+            idx = int(event.key) - 1
+            if idx >= 9:
+                return
+            if hasattr(self, "option_targets") and idx < len(self.option_targets):
+                self._activate_target(self.option_targets[idx])
+        elif event.key in ("+", "c", "C"):
+            self._switch_to_custom(True)

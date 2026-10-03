@@ -98,6 +98,13 @@ ModalScreen {
     padding-right: 1;
 }
 
+/* View toggle for ModelPickerModal: only one of list/custom is visible. */
+/* Without this, both views render stacked, so `/model` looks like */
+/* "custom addition only" with the selection list pushed out of view. */
+#view-list.-hidden, #view-custom.-hidden {
+    display: none;
+}
+
 #model-option-list {
     height: auto;
     max-height: 16;

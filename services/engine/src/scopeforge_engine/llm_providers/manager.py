@@ -43,6 +43,10 @@ class ProviderManager:
         self.active_provider_name: str = "claude-3-7-sonnet"
         self._cached_chat_model: Optional[BaseChatModel] = None
         self._has_persisted_active: bool = False
+        # Names registered via add_custom_provider / loaded YAML entries that
+        # are not stock defaults. Used by the picker so stock models are never
+        # mislabeled [CUSTOM].
+        self.custom_provider_names: set[str] = set()
 
         self._load_config()
         # Only auto-detect when there is no persisted user choice.
@@ -90,6 +94,28 @@ class ProviderManager:
             return None
         return text or None
 
+    def is_custom_provider(self, name: str) -> bool:
+        """True only for user-added models — never for stock defaults."""
+        if name in self.custom_provider_names:
+            return True
+        return name not in DEFAULT_PROVIDERS and name != "mock-secops"
+
+    @staticmethod
+    def resolve_key_ref(raw_key: Optional[str]) -> Optional[str]:
+        """Resolve `env:VAR` without persisting secrets. Returns None when the
+        reference points at a set env var (factory reads env at runtime)."""
+        if not raw_key:
+            return None
+        text = str(raw_key).strip()
+        if text.lower().startswith("env:"):
+            var = text[4:].strip()
+            if not var:
+                raise ValueError("API Key 'env:' must name a variable, e.g. env:OPENROUTER_API_KEY")
+            if not os.getenv(var):
+                raise ValueError(f"env:{var} is not set in this environment")
+            return None
+        return text or None
+
     def _load_config(self):
         """Load user custom providers from YAML if present."""
         if self.config_path.exists():
@@ -102,6 +128,8 @@ class ProviderManager:
                         cfg = LLMConfig(**p_data)
                         cfg = self._migrate_config(cfg)
                         self.providers[name] = cfg
+                        if name not in DEFAULT_PROVIDERS and name != "mock-secops":
+                            self.custom_provider_names.add(name)
                     except Exception:
                         continue
                 active = data.get("active")
@@ -237,6 +265,11 @@ class ProviderManager:
         model = (model or "").strip()
         if not model:
             raise ValueError("model id is required (e.g. openrouter/free, deepseek/deepseek-chat, gpt-4o)")
+        # `env:VAR` never persists a secret — factory reads env at runtime.
+        if api_key and str(api_key).strip().lower().startswith("env:"):
+            api_key = self.resolve_key_ref(api_key)
+        # Strip pasted curl/quotes/bearer prefixes before storing.
+        api_key = self._sanitize_api_key(api_key)
         # `openrouter/free`, `openrouter:free`, `openrouter/auto` are all valid OpenRouter slugs — keep as-is.
         name = name.strip() if name and name.strip() else f"custom-{model.replace('/', '-').split(':')[0]}"
         ptype = ProviderType.CUSTOM
@@ -293,6 +326,13 @@ class ProviderManager:
             extra_headers=extra_headers,
         )
         self.register_provider(cfg)
+        # Track true customs so the picker never mislabels stock as [CUSTOM].
+        # A stock name reused here is treated as a custom override.
+        self.custom_provider_names.add(name)
+        if name in self.providers:
+            # register_provider already saved; ensure the custom set survives
+            # even when the name collides with a stock preset.
+            pass
         if set_active:
             self.set_active_provider(name)
         return cfg
@@ -320,7 +360,11 @@ class ProviderManager:
             except Exception:
                 pass
         if api_key is not None:
-            cfg.api_key = api_key if api_key.strip() else None
+            if api_key and str(api_key).strip().lower().startswith("env:"):
+                cfg.api_key = self.resolve_key_ref(api_key)
+            else:
+                cleaned = self._sanitize_api_key(api_key)
+                cfg.api_key = cleaned if cleaned else None
         if api_base is not None:
             b = api_base.strip() or None
             b = ProviderManager._normalize_base_for_provider(cfg.provider, b)

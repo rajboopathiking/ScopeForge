@@ -113,17 +113,17 @@ ScopeForge provides the full developer toolset found in Claude Code and Open Cod
 
 ## 4.2 In-Terminal Model & Provider Configuration Center
 
-Launch via `/model` or `/config model`:
+Launch via `/model` or `/config model`. It is a single modal with two views — **selection list first, custom form on demand** (never custom-only):
 
-- **Tab 1: 📋 Active Models & Quick Switch**:
-  - Live table of all registered models (`Active`, `Name`, `Provider`, `Model ID`, `Temperature`).
-  - Highlight desired model with <kbd>↑</kbd>/<kbd>↓</kbd> and click **`Activate Selected`**.
-- **Tab 2: ⚙️ Configure Provider in UI**:
-  - **Quick Presets**: One-click auto-fill for `OpenRouter Free` (`openrouter/free`), `DeepSeek R1 Free` (`deepseek/deepseek-r1:free`), `Llama 3.3 Free` (`meta-llama/llama-3.3-70b-instruct:free`), `Gemini 2.0 Free` (`google/gemini-2.0-flash-exp:free`), `Claude 3.5`, and `Local Ollama`.
-  - **Interactive Inputs**: Provider Platform, Config Name, Model ID, Masked API Key, API Base URL, Temperature, Max Tokens.
+- **View 1: 📋 Model Selection List** (default):
+  - Filter box (`Type to filter models...`), live-filtered `OptionList` of featured presets + `[STOCK]` + `[CUSTOM]` models, ending with `[+] Add Custom Model...`.
+  - <kbd>1</kbd>–<kbd>9</kbd> selects from the first 9 visible rows; deeper rows show `[·]` and need <kbd>↑</kbd>/<kbd>↓</kbd> + <kbd>Enter</kbd>. Buttons: **`Select (Enter)`**, **`Add Custom (+)`**, **`Cancel (Esc)`**.
+- **View 2: ⚙️ Add Custom Model** (via `Add Custom (+)` button, `[+]` row, or <kbd>+</kbd>/<kbd>c</kbd>):
+  - **Interactive Inputs**: Alias/Name, Provider Platform, Model ID*, API Key* (`env:VAR` supported), API Base URL*, Temperature, Max Tokens.
   - **Instant Buttons**:
-    - **`💾 Save & Activate in UI`**: Saves to `.scopeforge/providers.yaml` and switches the active session model immediately.
-    - **`Save to Config Only`**: Adds the provider to registry without switching current active session.
+    - **`Save & Select`**: Saves to `.scopeforge/providers.yaml`, badges `[CUSTOM]`, and switches the active session model immediately (warns `⚠️ Running offline` when no usable key/endpoint).
+    - **`Test`**: Validates without saving or touching disk.
+    - **`Back`**: Returns to the selection list.
 
 ---
 
