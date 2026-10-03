@@ -1,0 +1,95 @@
+"""Data models for custom LLM provider configuration."""
+from __future__ import annotations
+
+from enum import Enum
+from typing import Any
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ProviderType(str, Enum):
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    OLLAMA = "ollama"
+    OPENROUTER = "openrouter"
+    GEMINI = "gemini"
+    GROQ = "groq"
+    CUSTOM = "custom"
+    MOCK = "mock"
+
+
+class LLMConfig(BaseModel):
+    """Configuration for a specific LLM provider and model."""
+    model_config = ConfigDict(frozen=False)
+
+    name: str = "default"
+    provider: ProviderType = ProviderType.MOCK
+    model: str = "claude-3-7-sonnet"
+    api_key: str | None = None
+    api_base: str | None = None
+    temperature: float = 0.1
+    max_tokens: int = 4096
+    streaming: bool = True
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+    extra_params: dict[str, Any] = Field(default_factory=dict)
+
+
+DEFAULT_PROVIDERS: dict[str, LLMConfig] = {
+    "claude-3-7-sonnet": LLMConfig(
+        name="claude-3-7-sonnet",
+        provider=ProviderType.ANTHROPIC,
+        model="claude-3-7-sonnet-20250219",
+        temperature=0.1,
+    ),
+    "claude-3-5-sonnet": LLMConfig(
+        name="claude-3-5-sonnet",
+        provider=ProviderType.ANTHROPIC,
+        model="claude-3-5-sonnet-20241022",
+        temperature=0.1,
+    ),
+    "gpt-4o": LLMConfig(
+        name="gpt-4o",
+        provider=ProviderType.OPENAI,
+        model="gpt-4o",
+        temperature=0.1,
+    ),
+    "gpt-4o-mini": LLMConfig(
+        name="gpt-4o-mini",
+        provider=ProviderType.OPENAI,
+        model="gpt-4o-mini",
+        temperature=0.1,
+    ),
+    "ollama-llama3": LLMConfig(
+        name="ollama-llama3",
+        provider=ProviderType.OLLAMA,
+        model="llama3:latest",
+        api_base="http://localhost:11434",
+        temperature=0.2,
+    ),
+    "ollama-deepseek-r1": LLMConfig(
+        name="ollama-deepseek-r1",
+        provider=ProviderType.OLLAMA,
+        model="deepseek-r1:latest",
+        api_base="http://localhost:11434",
+        temperature=0.2,
+    ),
+    "openrouter-claude": LLMConfig(
+        name="openrouter-claude",
+        provider=ProviderType.OPENROUTER,
+        model="anthropic/claude-3.7-sonnet",
+        api_base="https://openrouter.ai/api/v1",
+        temperature=0.1,
+    ),
+    "groq-llama3": LLMConfig(
+        name="groq-llama3",
+        provider=ProviderType.GROQ,
+        model="llama-3.3-70b-versatile",
+        api_base="https://api.groq.com/openai/v1",
+        temperature=0.1,
+    ),
+    "mock-secops": LLMConfig(
+        name="mock-secops",
+        provider=ProviderType.MOCK,
+        model="mock-security-evaluator",
+        temperature=0.0,
+    ),
+}

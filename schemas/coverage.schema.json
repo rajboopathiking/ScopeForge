@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scopeforge.dev/schemas/coverage.json",
+  "title": "Coverage catalog T01–T12 (plan.md §6.2)",
+  "type": "object",
+  "required": ["categories"],
+  "properties": {
+    "categories": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "question", "checks"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^T(0[1-9]|1[0-2])$" },
+          "name": { "type": "string" },
+          "question": { "type": "string" },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["check_id", "title", "applicability"],
+              "properties": {
+                "check_id": { "type": "string" },
+                "title": { "type": "string" },
+                "applicability": { "enum": ["not_assessed", "applicable", "not_applicable", "blocked"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

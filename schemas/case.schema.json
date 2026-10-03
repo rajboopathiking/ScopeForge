@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scopeforge.dev/schemas/case.json",
+  "title": "Concrete case (plan.md §6.3)",
+  "type": "object",
+  "required": ["case_id", "check_id", "asset", "hypothesis", "expected_rule", "baseline", "changed_variable", "observable_result", "stopping_point", "permission_ref", "result"],
+  "properties": {
+    "case_id": { "type": "string", "pattern": "^C-\\d{4}$" },
+    "check_id": { "type": "string", "pattern": "^T(0[1-9]|1[0-2])\\.\\d+$" },
+    "asset": { "type": "string" },
+    "feature": { "type": "string" },
+    "actor_ref": { "type": "string" },
+    "role": { "type": "string" },
+    "tenant_ref": { "type": "string" },
+    "object_ref": { "type": "string" },
+    "workflow_state": { "type": "string" },
+    "hypothesis": { "type": "string", "minLength": 1 },
+    "expected_rule": { "type": "string", "minLength": 1 },
+    "baseline": { "type": "string", "minLength": 1 },
+    "changed_variable": { "type": "string", "minLength": 1 },
+    "observable_result": { "type": "string", "minLength": 1 },
+    "stopping_point": { "type": "string", "minLength": 1 },
+    "permission_ref": { "type": "string", "minLength": 1 },
+    "result": { "enum": ["queued", "tested_no_issue_observed", "lead", "validated_finding", "false_positive", "blocked", "inconclusive"] },
+    "evidence_refs": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "observed_behavior": { "type": ["string", "null"] },
+    "inferred_impact": { "type": ["string", "null"] },
+    "next_action": { "type": "string" }
+  }
+}

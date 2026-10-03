@@ -1,0 +1,15 @@
+{"name": "tenancy-demo", "version": "0.1.0",
+"objective": "Practice T02.1 baseline/variant authorization comparison on researcher-owned fixtures",
+"scope_note": "Localhost only. Two tenants, two accounts, one project. No external network.",
+"tenants": {"tenant-a": ["account-a"], "tenant-b": ["account-b"]},
+"projects": {"proj_A": {"tenant": "tenant-a", "files": ["plan.pdf"]}},
+"endpoints": {
+"/export (GET)": "export a project you own (X-Actor header selects the account)",
+"/export (POST)": "create an export job for a project you own (R4-class state change)",
+"/go-in": "302 to /export (in-scope redirect hop)",
+"/go-out": "302 to https://example.invalid/ (out-of-scope hop for gate tests)",
+"/echo-headers": "returns received header presence (never values)",
+"/flaky-post (POST)": "500 on first call, 200 after (retry-policy tests)",
+"/reset (POST)": "restore fixtures"},
+"budgets": {"requests_total": 50, "max_concurrency": 1},
+"expected_evidence": "baseline 200 with project fields vs variant 403 error-only"}

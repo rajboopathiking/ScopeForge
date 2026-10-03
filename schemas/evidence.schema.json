@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scopeforge.dev/schemas/evidence.json",
+  "title": "Evidence object (plan.md §10.1)",
+  "type": "object",
+  "required": ["evidence_id", "sha256", "source_type", "original", "captured_at", "case_refs"],
+  "properties": {
+    "evidence_id": { "type": "string", "pattern": "^E-\\d{3,}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "source_type": { "type": "string" },
+    "original": { "type": "boolean" },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "tool": { "type": "string" },
+    "tool_version": { "type": "string" },
+    "asset": { "type": "string" },
+    "actor_ref": { "type": "string" },
+    "tenant_ref": { "type": "string" },
+    "case_refs": { "type": "array", "items": { "type": "string" } },
+    "redaction_state": { "enum": ["original", "redacted", "derived"] },
+    "derived_from": { "type": ["string", "null"] },
+    "mime": { "type": "string" },
+    "byte_size": { "type": "integer", "minimum": 0 },
+    "sensitivity": { "type": "string" },
+    "description": { "type": "string" }
+  }
+}

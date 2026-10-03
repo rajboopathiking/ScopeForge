@@ -1,0 +1,1 @@
+{"actor":"account-a","body":{"project_id":"proj_A","tenant":"tenant-a","files":["plan.pdf"]},"fixture_ownership":"account-a/tenant-a","headers":{"x-tenant":"tenant-a"},"status":200,"url":"file://labs/tenancy-demo/export-A-as-A.json"}
