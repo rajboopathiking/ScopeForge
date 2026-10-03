@@ -33,6 +33,13 @@ class ChatStream(Widget):
     def on_mount(self):
         self.post_welcome_banner()
 
+    @staticmethod
+    def _escape(text: str) -> str:
+        # RichLog with markup=True treats [tag] as style. LLM markdown and code
+        # are full of brackets — escape them so general chat renders verbatim
+        # like Open Code / Claude Code instead of dropping content.
+        return text.replace("[", "\\[")
+
     def post_welcome_banner(self):
         log = self.query_one("#chat-log", RichLog)
         banner = (
@@ -47,10 +54,15 @@ class ChatStream(Widget):
         log.write(banner)
 
     def add_user_message(self, text: str):
+        if getattr(self, "_stream_active", False):
+            self.finish_agent_stream()
         log = self.query_one("#chat-log", RichLog)
-        log.write(f"\n[bold #58a6ff]❯ You:[/] {text}\n")
+        log.write(f"\n[bold #58a6ff]❯ You:[/] {self._escape(text)}\n")
 
-    def add_agent_message(self, agent: str, markdown_content: str):
+    def start_agent_stream(self, agent: str):
+        """Begin streaming tokens for an agent response."""
+        if getattr(self, "_stream_active", False):
+            self.finish_agent_stream()
         log = self.query_one("#chat-log", RichLog)
         color = {
             "supervisor": "#58a6ff",
@@ -58,10 +70,57 @@ class ChatStream(Widget):
             "audit": "#d29922",
             "exploit": "#f85149",
             "report": "#bc8cff",
+            "dev": "#3fb950",
+        }.get(agent.lower(), "#58a6ff")
+        log.write(f"[bold {color}]🤖 [{agent.capitalize()}Agent][/]")
+        self._stream_buffer = ""
+        self._stream_active = True
+
+    def append_agent_chunk(self, chunk: str):
+        """Append a streamed token chunk and write completed lines in real-time."""
+        if not getattr(self, "_stream_active", False):
+            self.start_agent_stream("supervisor")
+        if not chunk:
+            return
+        log = self.query_one("#chat-log", RichLog)
+        self._stream_buffer += chunk
+        while "\n" in self._stream_buffer:
+            line, self._stream_buffer = self._stream_buffer.split("\n", 1)
+            log.write(self._escape(line))
+        # Long line streaming flush (words flow continuously without waiting for newline)
+        if len(self._stream_buffer) > 80:
+            space_idx = self._stream_buffer.rfind(" ")
+            if space_idx > 30:
+                line = self._stream_buffer[:space_idx]
+                self._stream_buffer = self._stream_buffer[space_idx + 1 :]
+                log.write(self._escape(line))
+
+    def finish_agent_stream(self):
+        """Flush any remaining stream buffer and finalize agent message."""
+        if not getattr(self, "_stream_active", False):
+            return
+        log = self.query_one("#chat-log", RichLog)
+        if getattr(self, "_stream_buffer", ""):
+            log.write(self._escape(self._stream_buffer))
+            self._stream_buffer = ""
+        log.write("")
+        self._stream_active = False
+
+    def add_agent_message(self, agent: str, markdown_content: str):
+        if getattr(self, "_stream_active", False):
+            self.finish_agent_stream()
+        log = self.query_one("#chat-log", RichLog)
+        color = {
+            "supervisor": "#58a6ff",
+            "recon": "#79c0ff",
+            "audit": "#d29922",
+            "exploit": "#f85149",
+            "report": "#bc8cff",
+            "dev": "#3fb950",
         }.get(agent.lower(), "#58a6ff")
 
         log.write(f"[bold {color}]🤖 [{agent.capitalize()}Agent][/]")
-        log.write(markdown_content)
+        log.write(self._escape(markdown_content))
         log.write("")
 
     def add_tool_call(self, tool_name: str, args: Dict[str, Any], status: str = "RUNNING"):
@@ -75,15 +134,16 @@ class ChatStream(Widget):
     def add_a2a_banner(self, sender: str, recipient: str, intent: str, preview: str = ""):
         log = self.query_one("#chat-log", RichLog)
         log.write(
-            f"  [#8957e5]⇄ A2A Protocol:[/] [bold]{sender}[/] → [bold]{recipient}[/] "
-            f"[#d2a8ff][{intent}][/] [dim]{preview}[/]"
+            f"  [#8957e5]⇄ A2A Protocol:[/] [bold]{self._escape(sender)}[/] → [bold]{self._escape(recipient)}[/] "
+            f"[#d2a8ff][{self._escape(intent)}][/] [dim]{self._escape(preview)}[/]"
         )
 
     def add_finding_card(self, finding: Dict[str, Any]):
         log = self.query_one("#chat-log", RichLog)
         sev = finding.get("severity", "MEDIUM")
         color = {"CRITICAL": "red", "HIGH": "bright_red", "MEDIUM": "yellow"}.get(sev, "blue")
+        title = self._escape(str(finding.get('title', '')))
         log.write(
-            f"\n  [bold {color} on #21262d] 🚨 VULNERABILITY FOUND: {finding.get('title')} [/]\n"
-            f"  Severity: [{color} bold]{sev}[/] | CVSS: [bold]{finding.get('cvss', 'N/A')}[/] | CWE: {finding.get('cwe', 'N/A')}\n"
+            f"\n  [bold {color} on #21262d] 🚨 VULNERABILITY FOUND: {title} [/]\n"
+            f"  Severity: [{color} bold]{self._escape(str(sev))}[/] | CVSS: [bold]{self._escape(str(finding.get('cvss', 'N/A')))}[/] | CWE: {self._escape(str(finding.get('cwe', 'N/A')))}\n"
         )

@@ -311,10 +311,10 @@ async def test_interactive_model_config_modal():
         opt_list = modal.query_one("#model-option-list", OptionList)
         assert opt_list.option_count >= 8
 
-        # Test selecting preset via keyboard shortcut '2' (DeepSeek R1 Free)
+        # Test selecting preset via keyboard shortcut '2' (Gemma 4 31B Free)
         await pilot.press("2")
         await pilot.pause()
-        assert "deepseek" in pilot.app.provider_mgr.active_provider_name
+        assert "gemma" in pilot.app.provider_mgr.active_provider_name
 
         # 2. Re-open and switch to Custom view
         pilot.app.handle_user_input("/model")

@@ -7,7 +7,7 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
 
-class AgentState(TypedDict):
+class AgentState(TypedDict, total=False):
     """The unified state shared across all agents in the LangGraph network."""
     messages: Annotated[List[BaseMessage], add_messages]
     active_agent: str
@@ -21,3 +21,6 @@ class AgentState(TypedDict):
     rag_context: str
     pending_approval: Optional[Dict[str, Any]]
     next_step: Optional[str]
+    # Explicit routing override from TUI `/agent <name>` (Open Code style).
+    # When set, supervisor skips heuristic and delegates directly.
+    forced_agent: Optional[str]

@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.widgets import RichLog
 
 from ..a2a.bus import A2ABus
 from ..a2a.protocol import A2AMessage
@@ -69,6 +70,10 @@ class ScopeForgeTUIApp(App):
         self.chat_history: List[Any] = []
         self.total_tokens: int = 0
         self.estimated_cost: float = 0.0
+        # One-shot routing override from `/agent <name>` (Open Code style).
+        # Previously `/agent` only changed the header badge and never reached
+        # the orchestrator, so directing did nothing.
+        self.pending_agent: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header-bar")
@@ -135,28 +140,50 @@ class ScopeForgeTUIApp(App):
             if len(tokens) > 1:
                 target = tokens[1]
                 if target.lower() == "add" and len(tokens) >= 4:
-                    # /model add <name> <model_id> [api_key] [base_url]
+                    # /model add <name> <model_id> <api_key> <base_url>
+                    # api_key, base_url, model_id are essential for custom models
+                    # (api_key may be omitted only for Ollama/local or when env provides it).
                     m_name = tokens[2]
-                    m_id = tokens[3]
+                    m_id = tokens[3] if len(tokens) > 3 else ""
                     m_key = tokens[4] if len(tokens) > 4 else None
                     m_base = tokens[5] if len(tokens) > 5 else None
-                    cfg = self.provider_mgr.add_custom_provider(
-                        name=m_name,
-                        model=m_id,
-                        api_key=m_key,
-                        api_base=m_base,
-                        set_active=True,
-                    )
+                    if not m_id.strip():
+                        chat.add_agent_message("Supervisor", "✗ Model ID * is required. Usage: `/model add <name> <model_id> <api_key> <base_url>`")
+                        return
+                    if not m_base:
+                        chat.add_agent_message("Supervisor", "✗ API Base URL * is required. Usage: `/model add <name> <model_id> <api_key> <base_url>`\nExample: `/model add my-deepseek deepseek/deepseek-chat sk-... https://api.deepseek.com/v1`")
+                        return
+                    if not (m_base.startswith("http://") or m_base.startswith("https://")):
+                        chat.add_agent_message("Supervisor", f"✗ Invalid base URL '{m_base}'. Must start with http(s)://")
+                        return
+                    is_local = "localhost" in m_base or "127.0.0.1" in m_base
+                    import os as _os2
+                    has_env_key = any(_os2.getenv(v) for v in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"))
+                    if not m_key and not is_local and not has_env_key:
+                        chat.add_agent_message("Supervisor", "✗ API Key * is required (except Ollama/local). Usage: `/model add <name> <model_id> <api_key> <base_url>`\nTip: use `/model` UI which marks api_key, base_url, model_name as * required.")
+                        return
+                    try:
+                        cfg = self.provider_mgr.add_custom_provider(
+                            name=m_name,
+                            model=m_id,
+                            api_key=m_key,
+                            api_base=m_base,
+                            set_active=True,
+                        )
+                    except ValueError as e:
+                        chat.add_agent_message("Supervisor", f"✗ {e}")
+                        return
                     self._sync_header()
                     chat.add_agent_message(
                         "Supervisor",
-                        f"✓ Added & activated custom model: **{m_name}** (`{m_id}`) at `{m_base or 'default endpoint'}`."
+                        f"✓ Added & activated custom model: **{cfg.name}** (`{cfg.model}`) at `{cfg.api_base or 'default endpoint'}`."
                     )
                     return
-                elif target.lower() in ("free", "openrouter/free", "openrouter:free") or (target.lower() == "openrouter" and len(tokens) > 2 and tokens[2].strip().lower() == "free"):
+                elif target.lower() in ("free", "openrouter/free", "openrouter:free", "openrouter/auto") or (target.lower() == "openrouter" and len(tokens) > 2 and tokens[2].strip().lower() == "free"):
                     self.provider_mgr.set_active_provider("openrouter-free")
-                    chat.add_agent_message("Supervisor", "✓ Switched active LLM to OpenRouter Free tier (**openrouter/free**).")
+                    chat.add_agent_message("Supervisor", "✓ Switched active LLM to OpenRouter Free tier (**openrouter/free**, alias `openrouter/auto`). Needs `OPENROUTER_API_KEY` — `/config set key <KEY>` if unset.")
                     self._sync_header()
+                    return
                 elif target.lower() == "openrouter" and len(tokens) > 2:
                     model_id = tokens[2].strip()
                     cfg_name = f"openrouter-{model_id.replace('/', '-').split(':')[0]}"
@@ -193,12 +220,29 @@ class ScopeForgeTUIApp(App):
 
         elif action == "/agent":
             if len(parts) > 1:
-                agent_name = parts[1]
-                chat.add_agent_message("Supervisor", f"✓ Directing next mission specifically to **{agent_name.capitalize()}Agent**.")
-                header = self.query_one(HeaderBar)
-                header.active_agent = agent_name
+                agent_name = parts[1].lower().strip()
+                valid = ("supervisor", "recon", "audit", "exploit", "report", "dev")
+                # Normalise Claude Code style aliases
+                aliases = {
+                    "cloudsec": "audit", "apisec": "audit",
+                    "devagent": "dev", "reconagent": "recon",
+                }
+                agent_name = aliases.get(agent_name, agent_name)
+                if agent_name in valid:
+                    # One-shot override consumed by next run_agent_task
+                    self.pending_agent = None if agent_name == "supervisor" else agent_name
+                    scope_note = "" if agent_name == "supervisor" else " (next message only; `supervisor` resets)"
+                    chat.add_agent_message("Supervisor", f"✓ Directing next mission specifically to **{agent_name.capitalize()}Agent**{scope_note}.")
+                    try:
+                        header = self.query_one(HeaderBar)
+                        header.active_agent = agent_name
+                    except Exception:
+                        pass
+                else:
+                    chat.add_agent_message("Supervisor", f"✗ Unknown agent '{agent_name}'. Valid: {', '.join(valid)}")
             else:
-                chat.add_agent_message("Supervisor", "Active Agents: `supervisor`, `recon`, `audit`, `exploit`, `report`, `cloudsec`, `apisec`")
+                pending = f" | Pending override: `{self.pending_agent}`" if self.pending_agent else ""
+                chat.add_agent_message("Supervisor", f"Active Agents: `supervisor`, `recon`, `audit`, `exploit`, `report`, `dev`{pending}\nUsage: `/agent <name>` (one-shot)")
 
         elif action == "/rag":
             if len(parts) > 1:
@@ -278,10 +322,10 @@ class ScopeForgeTUIApp(App):
                 self.action_pick_model()
                 return
 
-            elif subcmd in ("free", "openrouter-free", "openrouter/free"):
+            elif subcmd in ("free", "openrouter-free", "openrouter/free", "openrouter/auto"):
                 self.provider_mgr.set_active_provider("openrouter-free")
                 self._sync_header()
-                chat.add_agent_message("Supervisor", "✓ Switched active LLM to OpenRouter Free tier (**openrouter/free**).")
+                chat.add_agent_message("Supervisor", "✓ Switched active LLM to OpenRouter Free tier (**openrouter/free**, alias `openrouter/auto`). Needs `OPENROUTER_API_KEY` — `/config set key <KEY>` if unset.")
                 return
 
             elif subcmd == "reset":
@@ -289,25 +333,44 @@ class ScopeForgeTUIApp(App):
                 self.sec_mode = "plan"
                 self.pipeline.middlewares[1].set_mode("plan")
                 self._sync_header()
-                chat.add_agent_message("Supervisor", "✓ Active configuration reset to default OpenRouter Free tier and PLAN mode.")
+                chat.add_agent_message("Supervisor", "✓ Active configuration reset to default OpenRouter Free tier (`openrouter/free`) and PLAN mode.")
                 return
 
             elif subcmd == "add" and len(tokens) >= 4:
                 m_name = tokens[2]
-                m_id = tokens[3]
+                m_id = tokens[3] if len(tokens) > 3 else ""
                 m_key = tokens[4] if len(tokens) > 4 else None
                 m_base = tokens[5] if len(tokens) > 5 else None
-                cfg = self.provider_mgr.add_custom_provider(
-                    name=m_name,
-                    model=m_id,
-                    api_key=m_key,
-                    api_base=m_base,
-                    set_active=True,
-                )
+                if not m_id.strip():
+                    chat.add_agent_message("Supervisor", "✗ Model ID * is required. Usage: `/config add <name> <model_id> <api_key> <base_url>`")
+                    return
+                if not m_base:
+                    chat.add_agent_message("Supervisor", "✗ API Base URL * is required. Usage: `/config add <name> <model_id> <api_key> <base_url>`")
+                    return
+                if not (m_base.startswith("http://") or m_base.startswith("https://")):
+                    chat.add_agent_message("Supervisor", f"✗ Invalid base URL '{m_base}'. Must start with http(s)://")
+                    return
+                is_local2 = "localhost" in m_base or "127.0.0.1" in m_base
+                import os as _os3
+                has_env2 = any(_os3.getenv(v) for v in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"))
+                if not m_key and not is_local2 and not has_env2:
+                    chat.add_agent_message("Supervisor", "✗ API Key * is required (except Ollama/local). Prefer `/model` UI where api_key, base_url, model_name are marked *.")
+                    return
+                try:
+                    cfg = self.provider_mgr.add_custom_provider(
+                        name=m_name,
+                        model=m_id,
+                        api_key=m_key,
+                        api_base=m_base,
+                        set_active=True,
+                    )
+                except ValueError as e:
+                    chat.add_agent_message("Supervisor", f"✗ {e}")
+                    return
                 self._sync_header()
                 chat.add_agent_message(
                     "Supervisor",
-                    f"✓ Added & activated custom model: **{m_name}** (`{m_id}`) at `{m_base or 'default endpoint'}`."
+                    f"✓ Added & activated custom model: **{cfg.name}** (`{cfg.model}`) at `{cfg.api_base or 'default endpoint'}`."
                 )
                 return
 
@@ -323,7 +386,7 @@ class ScopeForgeTUIApp(App):
                 val = " ".join(tokens[3:]).strip()
 
                 if key_name in ("model", "model_id"):
-                    if val.lower() in ("free", "openrouter/free", "openrouter:free"):
+                    if val.lower() in ("free", "openrouter/free", "openrouter:free", "openrouter/auto"):
                         self.provider_mgr.set_active_provider("openrouter-free")
                         self._sync_header()
                         chat.add_agent_message("Supervisor", "✓ Switched active LLM model to OpenRouter Free tier (**openrouter/free**).")
@@ -346,6 +409,9 @@ class ScopeForgeTUIApp(App):
                     return
 
                 elif key_name in ("base", "api_base", "base_url", "url"):
+                    if not (val.startswith("http://") or val.startswith("https://")):
+                        chat.add_agent_message("Supervisor", f"✗ Invalid base URL '{val}'. Must start with http(s)://")
+                        return
                     self.provider_mgr.update_active_config(api_base=val)
                     chat.add_agent_message("Supervisor", f"✓ API base URL updated to `{val}`.")
                     return
@@ -389,11 +455,22 @@ class ScopeForgeTUIApp(App):
                     return
 
             active_cfg = self.provider_mgr.get_active_config()
-            key_status = (
-                f"Configured (`...{active_cfg.api_key[-4:]}`)"
-                if active_cfg.api_key
-                else "Environment variable / Free Tier"
-            )
+            import os as _os
+            # Resolve env fallback for display (never print values)
+            env_key = {
+                "anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+                "openrouter": "OPENROUTER_API_KEY", "groq": "GROQ_API_KEY",
+                "gemini": "GEMINI_API_KEY", "ollama": None, "mock": None, "custom": None,
+            }.get(active_cfg.provider.value)
+            has_env = bool(env_key and _os.getenv(env_key))
+            if active_cfg.api_key:
+                key_status = f"Configured in profile (`...{active_cfg.api_key[-4:]}`)"
+            elif has_env:
+                key_status = f"From env `{env_key}` (set)"
+            elif active_cfg.provider.value in ("ollama", "mock"):
+                key_status = "Not required (local/mock)"
+            else:
+                key_status = f"⚠️ MISSING — set via `/config set key <KEY>` or env `{env_key or 'VAR'}` (mock fallback active)"
             base_url = active_cfg.api_base or "Default provider endpoint"
 
             cfg_text = (
@@ -411,7 +488,7 @@ class ScopeForgeTUIApp(App):
                 "**Fast Inline Commands (Claude Code / Open Code style):**\n"
                 "- `/model` or `/config model` : Open instant interactive switcher\n"
                 "- `/model add <name> <model_id> [key] [base_url]` : Add & activate custom model\n"
-                "- `/config set model <id>` : Switch active model (`deepseek/deepseek-r1:free`)\n"
+                "- `/config set model <id>` : Switch active model (`openrouter/free`)\n"
                 "- `/config set key <api-key>` : Configure provider API key\n"
                 "- `/config set temp <float>` : Set temperature (`0.0` - `1.0`)\n"
                 "- `/config set mode <plan|artifacts|live>` : Change guardrail mode\n"
@@ -588,10 +665,27 @@ class ScopeForgeTUIApp(App):
         """Invoke the LangGraph multi-agent system asynchronously."""
         chat = self.query_one(ChatStream)
         chat.add_user_message(prompt)
+        # Consume one-shot `/agent` override (Open Code behaviour)
+        forced = self.pending_agent
+        self.pending_agent = None
+        # Show routing intent immediately, Claude Code style
+        if forced:
+            try:
+                chat.add_a2a_banner("Supervisor", f"{forced.capitalize()}Agent", "TASK_DELEGATION", prompt[:40])
+            except Exception:
+                pass
 
         async def _execute():
             header = self.query_one(HeaderBar)
-            header.active_agent = "Supervisor"
+            header.active_agent = forced or "Supervisor"
+            stream_started = False
+
+            def _on_token(agent: str, chunk: str):
+                nonlocal stream_started
+                if not stream_started:
+                    chat.start_agent_stream(agent)
+                    stream_started = True
+                chat.append_agent_chunk(chunk)
 
             try:
                 state = await self.orchestrator.run(
@@ -599,16 +693,29 @@ class ScopeForgeTUIApp(App):
                     mode=self.sec_mode,
                     scope=self.current_scope,
                     history=self.chat_history,
+                    forced_agent=forced,
+                    on_token=_on_token,
                 )
+
+                if stream_started:
+                    chat.finish_agent_stream()
 
                 active_agent = state.get("active_agent", "Supervisor")
                 header.active_agent = active_agent
 
-                # Add last response
+                # Add last response (if not already streamed live)
                 if state.get("messages"):
                     last_msg = state["messages"][-1]
-                    chat.add_agent_message(active_agent, str(last_msg.content))
-                    self.chat_history.extend(state["messages"][-2:])
+                    if not stream_started:
+                        chat.add_agent_message(active_agent, str(last_msg.content))
+                    # state["messages"] uses add_messages: history + [human, ai]
+                    # Only append the 2 new messages, guard against duplication
+                    new_msgs = state["messages"][-2:]
+                    # Avoid double-adding when history object was mutated in place
+                    if len(self.chat_history) >= 2 and self.chat_history[-2:] == new_msgs:
+                        pass
+                    else:
+                        self.chat_history.extend(new_msgs)
 
                 # Update findings in sidebar
                 sidebar = self.query_one(SidebarWidget)
@@ -616,12 +723,15 @@ class ScopeForgeTUIApp(App):
                     sidebar.add_finding(f)
                     chat.add_finding_card(f)
 
-                # Update token counters (estimated)
-                self.total_tokens += len(prompt.split()) * 4 + 450
-                self.estimated_cost += 0.003
+                # Update token counters (rough estimate: ~4 chars/token)
+                self.total_tokens += max(1, len(prompt) // 4) + 350
+                # Cost scales with model class; keep conservative placeholder
+                self.estimated_cost += 0.001 if "free" in self.provider_mgr.active_provider_name or "mock" in self.provider_mgr.active_provider_name else 0.003
                 self._sync_header()
 
             except Exception as e:
+                if stream_started:
+                    chat.finish_agent_stream()
                 chat.add_agent_message("Supervisor", f"❌ Error during multi-agent orchestration: {e}")
 
         asyncio.create_task(_execute())
@@ -654,11 +764,19 @@ class ScopeForgeTUIApp(App):
         self.push_screen(WikiModal(self.wiki))
 
     def action_clear_chat(self):
-        log = self.query_one("#chat-log", RichLog)
-        log.clear()
-        chat = self.query_one(ChatStream)
-        chat.post_welcome_banner()
+        try:
+            log = self.query_one("#chat-log", RichLog)
+            log.clear()
+        except Exception:
+            pass
+        try:
+            chat = self.query_one(ChatStream)
+            chat.post_welcome_banner()
+        except Exception:
+            pass
         self.chat_history.clear()
+        # Clearing resets one-shot routing too (least surprise)
+        self.pending_agent = None
 
     def action_quit_app(self):
         self.exit()

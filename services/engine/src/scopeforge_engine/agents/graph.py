@@ -1,10 +1,15 @@
 """LangGraph Multi-Agent Orchestration Network for ScopeForge."""
 from __future__ import annotations
 
+import contextvars
 import json
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
+
+_stream_callback_var: contextvars.ContextVar[Optional[Callable[[str, str], None]]] = contextvars.ContextVar(
+    "_stream_callback_var", default=None
+)
 
 from pathlib import Path
 from ..a2a.bus import A2ABus
@@ -101,6 +106,8 @@ class MultiAgentSecOpsOrchestrator:
 
         # 1. Define Agent Nodes
         async def supervisor_node(state: AgentState) -> Dict[str, Any]:
+            import re
+
             last_message = state["messages"][-1].content if state["messages"] else ""
             last_lower = str(last_message).lower()
 
@@ -109,20 +116,55 @@ class MultiAgentSecOpsOrchestrator:
             user_prefs = self.wiki.get_user_preferences()
             proj_rules = self._get_project_instructions()
 
-            # Routing heuristic / agent delegation
+            # Routing heuristic / agent delegation (conservative, Open Code style:
+            # general chat stays on supervisor; specialists only on operational intent).
+            # Previous substring checks (`"port" in ...`, `"enum" in ...`) mis-routed
+            # general questions like "explain ports in docker" or "surface tension".
             target_agent = "supervisor"
             intent = A2AIntent.TASK_DELEGATION
 
-            if any(k in last_lower for k in ["scan", "port", "recon", "surface", "enum"]):
-                target_agent = "recon"
-            elif any(k in last_lower for k in ["sast", "cve", "vuln", "sqli", "xss"]):
-                target_agent = "audit"
-            elif any(k in last_lower for k in ["poc", "exploit", "verify", "falsif"]):
-                target_agent = "exploit"
-            elif any(k in last_lower for k in ["report", "summary", "cvss", "remediation"]):
-                target_agent = "report"
-            elif any(k in last_lower for k in ["git status", "git diff", "view file", "read file", "edit file", "write file", "glob", "grep", "search code", "find file"]):
-                target_agent = "dev"
+            # Explicit routing override from `/agent <name>` (stored in state)
+            forced_agent = str(state.get("forced_agent") or "").lower().strip()
+            if forced_agent in ("recon", "audit", "exploit", "report", "dev", "supervisor"):
+                target_agent = forced_agent
+                # One-shot unless TUI re-sets it; clear after use is handled by caller
+            else:
+                # Legacy prefix support: "[agent:xxx] query" (older TUI builds)
+                m_forced = re.match(r"\[agent:(\w+)\]\s*(.*)", str(last_message), re.DOTALL | re.IGNORECASE)
+                if m_forced and m_forced.group(1).lower() in ("recon", "audit", "exploit", "report", "dev"):
+                    target_agent = m_forced.group(1).lower()
+                    last_message = m_forced.group(2)
+                    last_lower = str(last_message).lower()
+                else:
+                    def _has(pattern: str) -> bool:
+                        return re.search(pattern, last_lower) is not None
+
+                    # Operational recon: needs action verb + target-ish context, not conceptual Q&A
+                    is_conceptual = _has(r"\b(what is|what are|explain|difference|vs\.?\b|tension|how does|tutorial|in docker|docker.*port)\b")
+                    has_target_hint = _has(r"(authorized|example\.com|localhost|127\.0\.0\.1|https?://|\btarget\b|\bscope\b|:\d+\b)")
+                    has_recon_verb = _has(r"\b(port\s*scans?|nmap|recon(naissance)?|enumerate\s+(ports|hosts|subdomains|surface)|surface\s*(probe|map|enum)|open\s+ports?|scan\s+(the\s+)?target)\b")
+                    if has_recon_verb and (has_target_hint or not is_conceptual):
+                        # Still avoid conceptual "explain ports in docker" style
+                        if not (is_conceptual and not has_target_hint):
+                            target_agent = "recon"
+                    elif _has(r"\b(sast|static\s+analysis|cve-\d|vuln\s*(scan|audit|assess)|sqli|xss|cwe-\d+)\b") and _has(
+                        r"\b(audit|scan|review|check|triage|correlat|cve|sast|sqli|xss)\b"
+                    ):
+                        # Require security-operational context, not generic "review my code"
+                        if has_target_hint or _has(r"\b(audit|sast|cve|vuln|sqli|xss|cwe)\b"):
+                            # Generic "review my code for bugs" without sec keywords stays supervisor/dev
+                            if _has(r"\b(sast|cve|vuln|sqli|xss|cwe|owasp)\b"):
+                                target_agent = "audit"
+                    elif _has(r"\b(poc|proof.of.concept|exploit(ation)?|falsif\w*|verify\s+(exploit|poc))\b") and (
+                        has_target_hint or _has(r"\b(hypothesis|payload|target|poc|exploit)\b")
+                    ):
+                        target_agent = "exploit"
+                    elif _has(r"\b(compile|generat|export|build|show|summariz)\b") and _has(
+                        r"\b(report|cvss|remediation|findings|assessment)\b"
+                    ):
+                        target_agent = "report"
+                    elif _has(r"(git\s+(status|diff)|view\s+file|read\s+file|edit\s+file|write\s+file|\bglob\b|\bgrep\b|search\s+code|find\s+file)"):
+                        target_agent = "dev"
 
             if target_agent != "supervisor":
                 # Emit A2A task delegation message
@@ -140,24 +182,103 @@ class MultiAgentSecOpsOrchestrator:
                     "a2a_log": state.get("a2a_log", []) + [a2a_msg.model_dump()],
                 }
 
-            # Direct supervisor response
+            # Direct supervisor response (Claude Code / Open Code general chat)
             chat_model = self.provider_mgr.get_chat_model()
             skills_info = self.skill_mgr.get_prompt_instructions(str(last_message))
             sys_prompt = (
-                "You are the ScopeForge Claude Code / Open Code Supervisor. "
-                "You serve as an intelligent general coding assistant, system architect, "
-                "and cybersecurity operations coordinator.\n"
+                "You are the ScopeForge Supervisor — a Claude Code / Open Code style "
+                "general coding assistant, system architect, and security coordinator.\n"
+                "Answer general programming, architecture, and knowledge questions directly "
+                "and concisely with code blocks where useful. "
+                "Only delegate to security specialists when the user explicitly requests "
+                "a scan, audit, exploit verification, or report. "
+                "Be concise, use markdown, show diffs/edits explicitly.\n"
                 f"{proj_rules}\n{user_prefs}\n{rag_info}\n{skills_info}"
             )
             prompt_msgs = [SystemMessage(content=sys_prompt)] + list(state["messages"][-5:])
+            prompt_msgs = self.pipeline.run_before_llm(prompt_msgs, {"agent": "Supervisor"})
+            cb = _stream_callback_var.get()
             try:
-                response = await chat_model.ainvoke(prompt_msgs)
+                full_chunks = []
+                async for chunk in chat_model.astream(prompt_msgs):
+                    full_chunks.append(chunk)
+                    txt = getattr(chunk, "content", "")
+                    if txt and cb:
+                        cb("supervisor", str(txt))
+
+                if full_chunks:
+                    response = full_chunks[0]
+                    for c in full_chunks[1:]:
+                        response = response + c
+                else:
+                    response = AIMessage(content="")
+
+                # Claude Code resilience: reasoning models (deepseek-r1, etc.)
+                # sometimes return empty `content` with reasoning in a separate
+                # field that LangChain drops (transient `stopstop`). Never surface
+                # a blank bubble like the TUI did for `openrouter/free`-adjacent
+                # reasoning presets — fall back to reasoning text or retry hint.
+                if not str(getattr(response, "content", "") or "").strip():
+                    reason_text = ""
+                    try:
+                        ak = getattr(response, "additional_kwargs", {}) or {}
+                        # OpenAI-style reasoning fields LangChain may preserve
+                        for k in ("reasoning", "reasoning_content", "reasoning_details"):
+                            v = ak.get(k)
+                            if isinstance(v, str) and v.strip():
+                                reason_text = v.strip()
+                                break
+                            if isinstance(v, list) and v:
+                                parts = []
+                                for item in v:
+                                    if isinstance(item, dict):
+                                        t = item.get("text") or item.get("reasoning") or ""
+                                        if t:
+                                            parts.append(str(t))
+                                if parts:
+                                    reason_text = "\n".join(parts).strip()
+                                    break
+                        if not reason_text:
+                            meta = getattr(response, "response_metadata", {}) or {}
+                            for k in ("reasoning", "reasoning_content"):
+                                v = meta.get(k)
+                                if isinstance(v, str) and v.strip():
+                                    reason_text = v.strip()
+                                    break
+                    except Exception:
+                        reason_text = ""
+                    if reason_text:
+                        response = AIMessage(content=reason_text[:4000])
+                    else:
+                        active_cfg = self.provider_mgr.get_active_config()
+                        response = AIMessage(
+                            content=(
+                                f"⚠️ **Empty reply from `{active_cfg.model}`** (transient reasoning-model blank — Claude Code retries instead of failing).\n\n"
+                                f"Query was: **{str(last_message)[:400]}**\n\n"
+                                "Retry once, or switch to a non-reasoning preset:\n"
+                                "- `/model openrouter-free` (`openrouter/free` — verified live)\n"
+                                "- `/model openrouter-free-gemma` / `/model groq-llama3`\n"
+                                "- Reasoning models sometimes return reasoning-only chunks; retry usually succeeds."
+                            )
+                        )
             except Exception as e:
+                # Never return unrelated boilerplate (old TCP/UDP bug). Surface the
+                # real provider error with actionable next steps, Open Code style.
+                err = str(e)
+                # Truncate auth HTML noise, keep first useful line
+                err_short = err.splitlines()[0][:600] if err else type(e).__name__
+                active_cfg = self.provider_mgr.get_active_config()
                 response = AIMessage(
-                    content=f"⚠️ *[LLM Provider Notice: {e}]*\n\n"
-                    f"As the ScopeForge Assistant, answering query: **{last_message}**\n\n"
-                    "• **TCP (Transmission Control Protocol)**: Connection-oriented, guarantees delivery via acknowledgments, sequence numbers, and flow control. Ideal for HTTP/HTTPS, SSH, and file transfers.\n"
-                    "• **UDP (User Datagram Protocol)**: Connectionless, lower overhead, minimal latency without delivery guarantees. Ideal for DNS, VoIP, streaming, and gaming."
+                    content=(
+                        f"⚠️ **LLM call failed** (`{active_cfg.name}` / `{active_cfg.model}`): {err_short}\n\n"
+                        f"Query was: **{str(last_message)[:400]}**\n\n"
+                        "**Fix (pick one):**\n"
+                        f"- `/model` — switch to a working preset (try `openrouter-free` or `groq-llama3`)\n"
+                        f"- `/config set key <API_KEY>` — set key for `{active_cfg.provider.value}`\n"
+                        f"- `/config set model <model_id>` — e.g. `openrouter/free`\n"
+                        f"- `/config set base <url>` — custom endpoint, `/doctor` to diagnose\n"
+                        f"- Offline mock is active if no key is set; general Q&A still works in limited mode."
+                    )
                 )
             response = self.pipeline.run_after_llm(response, {"agent": "Supervisor"})
 
@@ -404,6 +525,8 @@ class MultiAgentSecOpsOrchestrator:
         mode: str = "plan",
         scope: Optional[List[str]] = None,
         history: Optional[List[BaseMessage]] = None,
+        forced_agent: Optional[str] = None,
+        on_token: Optional[Callable[[str, str], None]] = None,
     ) -> AgentState:
         """Execute the LangGraph multi-agent pipeline."""
         self.pipeline.middlewares[1].set_mode(mode)  # update ScopeGate mode
@@ -421,7 +544,12 @@ class MultiAgentSecOpsOrchestrator:
             "rag_context": "",
             "pending_approval": None,
             "next_step": None,
+            "forced_agent": forced_agent,
         }
 
-        final_state = await self.graph.ainvoke(initial_state)
-        return final_state
+        tok = _stream_callback_var.set(on_token)
+        try:
+            final_state = await self.graph.ainvoke(initial_state)
+            return final_state
+        finally:
+            _stream_callback_var.reset(tok)

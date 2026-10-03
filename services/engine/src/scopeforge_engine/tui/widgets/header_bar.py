@@ -66,12 +66,12 @@ class HeaderBar(Widget):
 
     def watch_tokens(self, value: int):
         try:
-            self.query_one("#badge-cost", Label).update(f" {value:,} tok ")
+            self.query_one("#badge-cost", Label).update(f" {value:,} tok ${self.cost:.4f} ")
         except Exception:
             pass
 
     def watch_cost(self, value: float):
         try:
-            self.query_one("#badge-cost", Label).update(f" {self.tokens:,} tok ")
+            self.query_one("#badge-cost", Label).update(f" {self.tokens:,} tok ${value:.4f} ")
         except Exception:
             pass

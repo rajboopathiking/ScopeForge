@@ -4,7 +4,19 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const PROVIDER_TYPES = ["mock", "openai-compat", "deepseek", "anthropic-compat"] as const;
+export const PROVIDER_TYPES = [
+  "mock",
+  "openai-compat",
+  "deepseek",
+  "anthropic-compat",
+  "gemini",
+  "ollama",
+  "vllm",
+  "lmstudio",
+  "openrouter",
+  "azure-openai",
+  "litellm",
+] as const;
 export type ProviderType = (typeof PROVIDER_TYPES)[number];
 
 export interface ProviderConfig {

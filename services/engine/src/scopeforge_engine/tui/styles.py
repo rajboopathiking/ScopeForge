@@ -81,13 +81,21 @@ ModalScreen {
 }
 
 #model-picker-dialog {
-    width: 78;
+    width: 80;
     height: auto;
-    max-height: 32;
+    max-height: 42;
     background: #161b22;
     border: thick #58a6ff;
     padding: 1 2;
     layout: vertical;
+    overflow-y: auto;
+}
+
+#view-custom {
+    height: auto;
+    max-height: 32;
+    overflow-y: auto;
+    padding-right: 1;
 }
 
 #model-option-list {
