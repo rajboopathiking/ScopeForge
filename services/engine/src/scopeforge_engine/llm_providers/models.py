@@ -72,6 +72,50 @@ DEFAULT_PROVIDERS: dict[str, LLMConfig] = {
         api_base="http://localhost:11434",
         temperature=0.2,
     ),
+    "openrouter-free": LLMConfig(
+        name="openrouter-free",
+        provider=ProviderType.OPENROUTER,
+        model="openrouter/free",
+        api_base="https://openrouter.ai/api/v1",
+        temperature=0.2,
+        extra_headers={
+            "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+            "X-Title": "ScopeForge Agent Harness",
+        },
+    ),
+    "openrouter-free-deepseek": LLMConfig(
+        name="openrouter-free-deepseek",
+        provider=ProviderType.OPENROUTER,
+        model="deepseek/deepseek-r1:free",
+        api_base="https://openrouter.ai/api/v1",
+        temperature=0.2,
+        extra_headers={
+            "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+            "X-Title": "ScopeForge Agent Harness",
+        },
+    ),
+    "openrouter-free-llama": LLMConfig(
+        name="openrouter-free-llama",
+        provider=ProviderType.OPENROUTER,
+        model="meta-llama/llama-3.3-70b-instruct:free",
+        api_base="https://openrouter.ai/api/v1",
+        temperature=0.1,
+        extra_headers={
+            "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+            "X-Title": "ScopeForge Agent Harness",
+        },
+    ),
+    "openrouter-free-gemini": LLMConfig(
+        name="openrouter-free-gemini",
+        provider=ProviderType.OPENROUTER,
+        model="google/gemini-2.0-flash-exp:free",
+        api_base="https://openrouter.ai/api/v1",
+        temperature=0.1,
+        extra_headers={
+            "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+            "X-Title": "ScopeForge Agent Harness",
+        },
+    ),
     "openrouter-claude": LLMConfig(
         name="openrouter-claude",
         provider=ProviderType.OPENROUTER,

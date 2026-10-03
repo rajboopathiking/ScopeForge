@@ -45,9 +45,12 @@ def create_chat_model(config: LLMConfig) -> BaseChatModel:
             elif provider == ProviderType.GROQ:
                 api_key = api_key or os.getenv("GROQ_API_KEY")
                 base_url = base_url or "https://api.groq.com/openai/v1"
-            elif provider == ProviderType.OPENROUTER:
+            headers = dict(config.extra_headers)
+            if provider == ProviderType.OPENROUTER:
                 api_key = api_key or os.getenv("OPENROUTER_API_KEY")
                 base_url = base_url or "https://openrouter.ai/api/v1"
+                headers.setdefault("HTTP-Referer", "https://github.com/rajboopathiking/ScopeForge")
+                headers.setdefault("X-Title", "ScopeForge Agent Harness")
 
             if not api_key and provider == ProviderType.OPENAI:
                 return MockSecOpsChatModel(model_name=f"[MOCK fallback: missing OPENAI_API_KEY] {config.model}")
@@ -59,7 +62,7 @@ def create_chat_model(config: LLMConfig) -> BaseChatModel:
                 temperature=config.temperature,
                 max_tokens=config.max_tokens,
                 streaming=config.streaming,
-                default_headers=config.extra_headers,
+                default_headers=headers,
                 **config.extra_params,
             )
         except Exception:

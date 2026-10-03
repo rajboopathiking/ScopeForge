@@ -31,7 +31,7 @@ class ProviderManager:
         elif os.getenv("OPENAI_API_KEY"):
             self.active_provider_name = "gpt-4o"
         elif os.getenv("OPENROUTER_API_KEY"):
-            self.active_provider_name = "openrouter-claude"
+            self.active_provider_name = "openrouter-free"
         elif os.getenv("GROQ_API_KEY"):
             self.active_provider_name = "groq-llama3"
         else:
@@ -74,6 +74,11 @@ class ProviderManager:
         """Switch the active provider."""
         if name in self.providers:
             self.active_provider_name = name
+            self._cached_chat_model = None
+            self.save_config()
+            return True
+        if name.lower() in ("free", "openrouter/free", "openrouter:free"):
+            self.active_provider_name = "openrouter-free"
             self._cached_chat_model = None
             self.save_config()
             return True

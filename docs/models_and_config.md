@@ -75,15 +75,22 @@ Set your OpenRouter API key:
 export OPENROUTER_API_KEY="sk-or-v1-..."
 ```
 
-#### A. Preset Models
-ScopeForge includes out-of-the-box presets for the most popular models on OpenRouter:
+#### A. Free Tier Models on OpenRouter
+OpenRouter provides models that are completely free to use with zero credit consumption:
+- **`/model openrouter/free`** (or **`/model free`**) — OpenRouter Free Router (`openrouter/free`)
+- **`/model openrouter-free-deepseek`** — DeepSeek R1 Free (`deepseek/deepseek-r1:free`)
+- **`/model openrouter-free-llama`** — Meta Llama 3.3 70B Free (`meta-llama/llama-3.3-70b-instruct:free`)
+- **`/model openrouter-free-gemini`** — Google Gemini 2.0 Flash Free (`google/gemini-2.0-flash-exp:free`)
+
+#### B. Premium Preset Models
+ScopeForge also includes presets for top frontier models:
 - `/model openrouter-claude` — Anthropic Claude 3.5 Sonnet
 - `/model openrouter-deepseek-r1` — DeepSeek R1 (reasoning model)
 - `/model openrouter-deepseek-v3` — DeepSeek V3 (general chat)
 - `/model openrouter-llama3` — Meta Llama 3.3 70B Instruct
 - `/model openrouter-qwen` — Qwen 2.5 Coder 32B Instruct
 
-#### B. Dynamic On-the-Fly Switching
+#### C. Dynamic On-the-Fly Switching
 You can point to **any** model cataloged on [OpenRouter](https://openrouter.ai/models) in real time:
 ```text
 /model openrouter deepseek/deepseek-r1

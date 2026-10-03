@@ -133,7 +133,11 @@ class ScopeForgeTUIApp(App):
         elif action == "/model":
             if len(parts) > 1:
                 target = parts[1]
-                if target.lower() == "openrouter" and len(parts) > 2:
+                if target.lower() in ("free", "openrouter/free", "openrouter:free") or (target.lower() == "openrouter" and len(parts) > 2 and parts[2].strip().lower() == "free"):
+                    self.provider_mgr.set_active_provider("openrouter-free")
+                    chat.add_agent_message("Supervisor", "✓ Switched active LLM to OpenRouter Free tier (**openrouter/free**).")
+                    self._sync_header()
+                elif target.lower() == "openrouter" and len(parts) > 2:
                     model_id = parts[2].strip()
                     cfg_name = f"openrouter-{model_id.replace('/', '-').split(':')[0]}"
                     from ..llm_providers.models import LLMConfig, ProviderType
