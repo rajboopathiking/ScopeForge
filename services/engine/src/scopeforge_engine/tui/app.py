@@ -133,11 +133,30 @@ class ScopeForgeTUIApp(App):
         elif action == "/model":
             if len(parts) > 1:
                 target = parts[1]
-                if self.provider_mgr.set_active_provider(target):
+                if target.lower() == "openrouter" and len(parts) > 2:
+                    model_id = parts[2].strip()
+                    cfg_name = f"openrouter-{model_id.replace('/', '-').split(':')[0]}"
+                    from ..llm_providers.models import LLMConfig, ProviderType
+                    cfg = LLMConfig(
+                        name=cfg_name,
+                        provider=ProviderType.OPENROUTER,
+                        model=model_id,
+                        api_base="https://openrouter.ai/api/v1",
+                        temperature=0.1,
+                    )
+                    self.provider_mgr.register_provider(cfg)
+                    self.provider_mgr.set_active_provider(cfg_name)
+                    chat.add_agent_message("Supervisor", f"✓ Configured & switched to OpenRouter model: **{model_id}** (`{cfg_name}`).")
+                    self._sync_header()
+                elif self.provider_mgr.set_active_provider(target):
                     chat.add_agent_message("Supervisor", f"✓ Switched active LLM model to **{self.provider_mgr.active_provider_name}**.")
                     self._sync_header()
                 else:
-                    chat.add_agent_message("Supervisor", f"✗ Provider '{target}' not found. Available: {', '.join([p.name for p in self.provider_mgr.list_providers()])}")
+                    chat.add_agent_message(
+                        "Supervisor",
+                        f"✗ Provider '{target}' not found. Available: {', '.join([p.name for p in self.provider_mgr.list_providers()])}\n\n"
+                        "*Tip:* To use any OpenRouter model on the fly, type `/model openrouter <model_id>` (e.g. `/model openrouter deepseek/deepseek-r1`)."
+                    )
             else:
                 self.action_pick_model()
 

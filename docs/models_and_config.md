@@ -69,35 +69,63 @@ Switch via `/model ollama-llama3` or `/model ollama-deepseek-r1`.
 Ollama communicates via `http://localhost:11434/v1`.
 
 ### 4. OpenRouter (Access 100+ Models)
+
+Set your OpenRouter API key:
 ```bash
-export OPENROUTER_API_KEY="sk-or-..."
+export OPENROUTER_API_KEY="sk-or-v1-..."
 ```
-Switch via `/model openrouter-claude`.
 
-### 5. Groq (Ultra-Low Latency Inference)
-```bash
-export GROQ_API_KEY="gsk_..."
+#### A. Preset Models
+ScopeForge includes out-of-the-box presets for the most popular models on OpenRouter:
+- `/model openrouter-claude` — Anthropic Claude 3.5 Sonnet
+- `/model openrouter-deepseek-r1` — DeepSeek R1 (reasoning model)
+- `/model openrouter-deepseek-v3` — DeepSeek V3 (general chat)
+- `/model openrouter-llama3` — Meta Llama 3.3 70B Instruct
+- `/model openrouter-qwen` — Qwen 2.5 Coder 32B Instruct
+
+#### B. Dynamic On-the-Fly Switching
+You can point to **any** model cataloged on [OpenRouter](https://openrouter.ai/models) in real time:
+```text
+/model openrouter deepseek/deepseek-r1
+/model openrouter google/gemini-2.0-flash-001
+/model openrouter meta-llama/llama-3.3-70b-instruct
+/model openrouter mistralai/mistral-large-2411
+/model openrouter cohere/command-r-plus-08-2024
 ```
-Switch via `/model groq-llama3`.
-
-### 6. Custom OpenAI-Compatible Endpoints (vLLM / LMStudio / LocalAI)
-Add a custom provider to `.scopeforge/providers.yaml`:
-```yaml
-providers:
-  local-vllm:
-    name: local-vllm
-    provider: custom
-    model: Qwen/Qwen2.5-Coder-32B-Instruct
-    api_base: http://localhost:8000/v1
-    api_key: none
-    temperature: 0.2
-```
-Then switch via `/model local-vllm`.
-
-### 7. Mock SecOps Evaluator (Zero API Key / Offline Demo)
-If no API keys are configured, ScopeForge operates using the built-in `mock-secops` provider. It simulates realistic reconnaissance, SAST code audits, CVE triage, and falsifiable PoCs without making external network calls.
+ScopeForge will instantly register the provider, set its endpoint to `https://openrouter.ai/api/v1`, and activate it for your session.
 
 ---
+
+## 3. General LLM Q&A Mode
+
+While ScopeForge has high-performance cybersecurity agents and ScopeGate protection, it also serves as a **first-class general AI coding & knowledge assistant**.
+
+### How Routing Works
+- **General Queries**: When your question is about software engineering, programming, computer science, mathematics, architecture, or general knowledge, the **Supervisor** directly responds using the full reasoning capabilities of your active model (Claude 3.5 Sonnet, DeepSeek R1, GPT-4o, etc.).
+- **Security Operations**: Specialized agent nodes (`Recon`, `Audit`, `Exploit`, `Report`) and security tools are only activated when your prompt targets reconnaissance, port scans, SAST code review, CVE advisories, or exploit verification.
+
+### Examples of General Q&A:
+
+```text
+❯ Explain the architectural differences between event-driven architecture and polling.
+```
+
+```text
+❯ Write a Python snippet that implements a thread-safe LRU cache using collections.OrderedDict.
+```
+
+```text
+❯ What are the trade-offs of using B-Tree vs LSM-Tree for database storage engines?
+```
+
+```text
+❯ How do I configure Nginx to handle WebSocket upgrades with proper timeout handling?
+```
+
+- **Conversation Memory**: Conversation context is maintained across turns.
+- **Project Guidelines**: If a `SCOPEFORGE.md` or `CLAUDE.md` file exists in your project root, the supervisor automatically adheres to your tech stack and coding conventions.
+- **Context Compaction**: If your conversation grows long, type `/compact` to summarize history and preserve token budget.
+
 
 ## 3. Runtime Configuration
 

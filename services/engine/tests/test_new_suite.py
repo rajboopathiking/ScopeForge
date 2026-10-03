@@ -277,5 +277,21 @@ async def test_claude_code_tui_slash_commands():
         # Test /pr
         pilot.app.handle_user_input("/pr")
         await pilot.pause()
+        # Test /model openrouter dynamic configuration
+        pilot.app.handle_user_input("/model openrouter deepseek/deepseek-r1")
+        await pilot.pause()
+        assert "openrouter" in pilot.app.provider_mgr.active_provider_name
+
+
+@pytest.mark.asyncio
+async def test_general_llm_qa():
+    orchestrator = MultiAgentSecOpsOrchestrator()
+    # General question should route to supervisor, not specialized security or dev agents
+    state = await orchestrator.run("What is the difference between TCP and UDP in computer networks?")
+    assert state["active_agent"] == "supervisor"
+    assert len(state["messages"]) > 0
+    content = str(state["messages"][-1].content)
+    assert len(content) > 0
+
 
 
