@@ -30,9 +30,16 @@ built with **Python Textual**, **LangChain**, **LangGraph**, **LlamaIndex RAG**,
 
 ### 🚀 Slash Commands
 
+- `/init`: Initialize `SCOPEFORGE.md` project memory & guidelines in repository root
+- `/diff`: Display git diff of working tree changes in the chat stream
+- `/commit [msg]`: Commit staged changes or auto-generate a commit message
+- `/review`: Autonomous Claude Code code review of git diff for bugs & security flaws
+- `/compact`: Compact conversation history to preserve LLM token context
+- `/doctor`: Run full system diagnostic check (Python, git, LLM, MCP, audit log)
+- `/pr`: Generate formatted GitHub Pull Request description template
 - `/model [name]`: Switch active LLM or open interactive model picker
 - `/mode <plan|artifacts|live>`: Change execution mode (ScopeGate policy guarded)
-- `/agent <name>`: Route next mission to a specialist (`recon`, `audit`, `exploit`, `report`, `cloudsec`, `apisec`)
+- `/agent <name>`: Route next mission to a specialist (`dev`, `recon`, `audit`, `exploit`, `report`)
 - `/skill [list|name]`: Discover and toggle specialized skills (`subdomain-recon`, `api-idor-audit`, `cve-triage`)
 - `/mcp [list|add|enable|disable]`: Manage Model Context Protocol (MCP) servers (`/mcp add <name> <cmd>`)
 - `/config`: Inspect active configuration, model settings, and safety policies

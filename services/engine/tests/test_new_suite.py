@@ -198,3 +198,84 @@ def test_mcp_customization(tmp_path):
     tools = mcp.get_langchain_tools()
     assert len(tools) >= 1
 
+
+def test_claude_code_developer_tools(tmp_path):
+    from scopeforge_engine.sec_tools import (
+        view_file,
+        edit_file,
+        write_file,
+        glob_files,
+        grep_search,
+        git_diff_tool,
+        git_status_tool,
+    )
+
+    test_file = tmp_path / "hello.py"
+    # Write tool
+    res = write_file.invoke({"file_path": str(test_file), "content": "def hello():\n    print('world')\n"})
+    data = json.loads(res)
+    assert data["status"] == "SUCCESS"
+
+    # View tool
+    res = view_file.invoke({"file_path": str(test_file), "start_line": 1, "end_line": 2})
+    data = json.loads(res)
+    assert "hello()" in data["content"]
+    assert data["total_lines"] == 2
+
+    # Edit tool
+    res = edit_file.invoke({
+        "file_path": str(test_file),
+        "target_content": "print('world')",
+        "replacement_content": "print('universe')",
+    })
+    data = json.loads(res)
+    assert data["status"] == "SUCCESS"
+    assert "universe" in test_file.read_text()
+
+    # Glob tool
+    res = glob_files.invoke({"pattern": "*.py", "directory": str(tmp_path)})
+    data = json.loads(res)
+    assert "hello.py" in data["files"]
+
+    # Grep tool
+    res = grep_search.invoke({"query": "universe", "directory": str(tmp_path)})
+    data = json.loads(res)
+    assert data["matches_count"] >= 1
+    assert data["matches"][0]["file"] == "hello.py"
+
+    # Git tools
+    diff_res = json.loads(git_diff_tool.invoke({"staged": False}))
+    assert "has_changes" in diff_res
+    status_res = json.loads(git_status_tool.invoke({}))
+    assert "status" in status_res
+
+
+@pytest.mark.asyncio
+async def test_dev_agent_routing():
+    orchestrator = MultiAgentSecOpsOrchestrator()
+    # Test dev agent routing
+    state = await orchestrator.run("git diff and check modified files", mode="plan")
+    assert state["active_agent"] == "dev"
+    assert len(state["messages"]) > 0
+    assert "DevAgent" in str(state["messages"][-1].content)
+
+
+@pytest.mark.asyncio
+async def test_claude_code_tui_slash_commands():
+    from scopeforge_engine.tui.app import ScopeForgeTUIApp
+    app = ScopeForgeTUIApp()
+    async with app.run_test() as pilot:
+        # Test /doctor
+        pilot.app.handle_user_input("/doctor")
+        await pilot.pause()
+        # Test /diff
+        pilot.app.handle_user_input("/diff")
+        await pilot.pause()
+        # Test /compact
+        pilot.app.handle_user_input("/compact")
+        await pilot.pause()
+        # Test /pr
+        pilot.app.handle_user_input("/pr")
+        await pilot.pause()
+
+

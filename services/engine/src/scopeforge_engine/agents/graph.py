@@ -6,24 +6,37 @@ from typing import Any, Dict, List, Literal, Optional
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
+from pathlib import Path
 from ..a2a.bus import A2ABus
 from ..a2a.protocol import A2AIntent, A2AMessage
 from ..llm_providers.manager import ProviderManager
 from ..middleware.pipeline import MiddlewarePipeline, create_default_pipeline
 from ..rag.engine import LlamaSecRAG
-from ..sec_tools.tools import (
+from ..sec_tools import (
+    ALL_CODE_TOOLS,
+    ALL_CYBER_TOOLS,
+    ALL_SUITE_TOOLS,
     bash_security_exec,
     cve_advisory_search,
+    edit_file,
     evidence_recorder,
     falsifiable_poc_runner,
+    git_commit_tool,
+    git_diff_tool,
+    git_status_tool,
+    glob_files,
+    grep_search,
     recon_port_scan,
     sast_code_audit,
+    view_file,
     web_surface_probe,
+    write_file,
 )
 from ..skills.manager import SkillManager
 from ..wiki.store import SecWiki
 from .custom_agent import CustomAgentLoader
 from .state import AgentState
+
 
 
 class MultiAgentSecOpsOrchestrator:
@@ -47,6 +60,18 @@ class MultiAgentSecOpsOrchestrator:
         self.custom_loader = CustomAgentLoader()
 
         self.graph = self._build_graph()
+
+    def _get_project_instructions(self) -> str:
+        """Load project instructions from SCOPEFORGE.md or CLAUDE.md if present."""
+        for name in ["SCOPEFORGE.md", "CLAUDE.md", ".scopeforge/instructions.md"]:
+            p = Path(name)
+            if p.exists() and p.is_file():
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        return f"\n[Project Guidelines from {name}]:\n" + f.read()[:4000]
+                except Exception:
+                    pass
+        return ""
 
     def _invoke_tool_safely(self, tool_func: Any, args: Dict[str, Any], agent_name: str) -> str:
         """Execute a tool through the middleware pipeline."""
@@ -79,9 +104,10 @@ class MultiAgentSecOpsOrchestrator:
             last_message = state["messages"][-1].content if state["messages"] else ""
             last_lower = str(last_message).lower()
 
-            # Retrieve RAG and Wiki context
+            # Retrieve RAG, Wiki, and Project Memory context
             rag_info = self.rag.get_context_for_prompt(str(last_message))
             user_prefs = self.wiki.get_user_preferences()
+            proj_rules = self._get_project_instructions()
 
             # Routing heuristic / agent delegation
             target_agent = "supervisor"
@@ -89,12 +115,14 @@ class MultiAgentSecOpsOrchestrator:
 
             if any(k in last_lower for k in ["scan", "port", "recon", "surface", "enum"]):
                 target_agent = "recon"
-            elif any(k in last_lower for k in ["sast", "code", "audit", "cve", "vuln", "sqli", "xss"]):
+            elif any(k in last_lower for k in ["sast", "cve", "vuln", "sqli", "xss"]):
                 target_agent = "audit"
             elif any(k in last_lower for k in ["poc", "exploit", "verify", "falsif"]):
                 target_agent = "exploit"
             elif any(k in last_lower for k in ["report", "summary", "cvss", "remediation"]):
                 target_agent = "report"
+            elif any(k in last_lower for k in ["git status", "git diff", "view file", "read file", "edit file", "write file", "glob", "grep", "search code", "find file"]):
+                target_agent = "dev"
 
             if target_agent != "supervisor":
                 # Emit A2A task delegation message
@@ -116,9 +144,10 @@ class MultiAgentSecOpsOrchestrator:
             chat_model = self.provider_mgr.get_chat_model()
             skills_info = self.skill_mgr.get_prompt_instructions(str(last_message))
             sys_prompt = (
-                "You are the ScopeForge Cybersecurity Supervisor. "
-                "You coordinate security assessments under authorized scope and rules of engagement.\n"
-                f"{user_prefs}\n{rag_info}\n{skills_info}"
+                "You are the ScopeForge Claude Code / Open Code Supervisor. "
+                "You serve as an intelligent general coding assistant, system architect, "
+                "and cybersecurity operations coordinator.\n"
+                f"{proj_rules}\n{user_prefs}\n{rag_info}\n{skills_info}"
             )
             prompt_msgs = [SystemMessage(content=sys_prompt)] + list(state["messages"][-5:])
             prompt_msgs = self.pipeline.run_before_llm(prompt_msgs, {"agent": "Supervisor"})
@@ -132,6 +161,7 @@ class MultiAgentSecOpsOrchestrator:
                 "user_preferences": user_prefs,
                 "rag_context": rag_info,
             }
+
 
         async def recon_node(state: AgentState) -> Dict[str, Any]:
             last_message = str(state["messages"][-1].content)
@@ -279,19 +309,64 @@ class MultiAgentSecOpsOrchestrator:
                 "a2a_log": state.get("a2a_log", []) + [a2a_msg.model_dump()],
             }
 
+        async def dev_node(state: AgentState) -> Dict[str, Any]:
+            last_message = str(state["messages"][-1].content)
+            last_lower = last_message.lower()
+
+            output = ""
+            if "status" in last_lower or ("git" in last_lower and "diff" not in last_lower):
+                status_out = self._invoke_tool_safely(git_status_tool, {}, "DevAgent")
+                output = f"**Git Status:**\n```json\n{status_out}\n```"
+            elif "diff" in last_lower:
+                staged = "staged" in last_lower or "cached" in last_lower
+                diff_out = self._invoke_tool_safely(git_diff_tool, {"staged": staged}, "DevAgent")
+                output = f"**Git Diff:**\n```json\n{diff_out}\n```"
+            elif "grep" in last_lower or "search" in last_lower:
+                query = last_message.split()[-1].strip("\"'") if len(last_message.split()) > 1 else "def "
+                grep_out = self._invoke_tool_safely(grep_search, {"query": query}, "DevAgent")
+                output = f"**Code Search Results:**\n```json\n{grep_out}\n```"
+            elif "glob" in last_lower or "find file" in last_lower:
+                glob_out = self._invoke_tool_safely(glob_files, {"pattern": "**/*.py"}, "DevAgent")
+                output = f"**Discovered Project Files:**\n```json\n{glob_out}\n```"
+            else:
+                glob_out = self._invoke_tool_safely(glob_files, {"pattern": "*"}, "DevAgent")
+                status_out = self._invoke_tool_safely(git_status_tool, {}, "DevAgent")
+                output = f"**Repository Overview:**\n```json\n{status_out}\n```\n\n**Root Files:**\n```json\n{glob_out}\n```"
+
+            a2a_msg = self.a2a_bus.send(
+                sender="DevAgent",
+                recipient="Supervisor",
+                intent=A2AIntent.TASK_RESULT,
+                payload={"task": last_message, "status": "COMPLETED"},
+            )
+
+            response_text = (
+                f"### [DevAgent] Code Workspace & Developer Operations\n\n"
+                f"{output}\n\n"
+                "-> Completed developer tooling request within local sandbox."
+            )
+
+            return {
+                "active_agent": "dev",
+                "next_step": "end",
+                "messages": [AIMessage(content=response_text)],
+                "a2a_log": state.get("a2a_log", []) + [a2a_msg.model_dump()],
+            }
+
         # 2. Add Nodes
         builder.add_node("supervisor", supervisor_node)
         builder.add_node("recon", recon_node)
         builder.add_node("audit", audit_node)
         builder.add_node("exploit", exploit_node)
         builder.add_node("report", report_node)
+        builder.add_node("dev", dev_node)
 
         # 3. Add Edges
         builder.add_edge(START, "supervisor")
 
         def router(state: AgentState) -> str:
             step = state.get("next_step")
-            if step in ("recon", "audit", "exploit", "report"):
+            if step in ("recon", "audit", "exploit", "report", "dev"):
                 return step
             return END
 
@@ -303,6 +378,7 @@ class MultiAgentSecOpsOrchestrator:
                 "audit": "audit",
                 "exploit": "exploit",
                 "report": "report",
+                "dev": "dev",
                 END: END,
             },
         )
@@ -311,6 +387,7 @@ class MultiAgentSecOpsOrchestrator:
         builder.add_edge("audit", END)
         builder.add_edge("exploit", END)
         builder.add_edge("report", END)
+        builder.add_edge("dev", END)
 
         return builder.compile()
 

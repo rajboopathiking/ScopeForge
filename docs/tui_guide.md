@@ -69,10 +69,17 @@ Located at the very top of your terminal:
 
 | Command | Usage | Description |
 |---|---|---|
+| **`/init`** | `/init` | Initialize `SCOPEFORGE.md` (or `CLAUDE.md`) project memory and guidelines in repository root |
+| **`/diff`** | `/diff` | Display git diff of working tree changes in the chat stream with syntax highlighting |
+| **`/commit`** | `/commit [message]` | Commit staged changes or auto-generate a conventional commit message |
+| **`/review`** | `/review` | Autonomous Claude Code style review of git changes for bugs, logic flaws, and security risks |
+| **`/compact`** | `/compact` | Compact conversation history to free up LLM context window tokens |
+| **`/doctor`** | `/doctor` | Run full system health & diagnostic check (Python, git, LLM, MCP, audit log) |
+| **`/pr`** | `/pr` | Generate formatted GitHub Pull Request description template |
 | `/help` | `/help` | Open the interactive documentation cheat sheet |
 | `/model` | `/model [name]` | Switch LLM or open interactive model picker table |
 | `/mode` | `/mode <plan\|artifacts\|live>` | Change ScopeGate policy execution mode |
-| `/agent` | `/agent <name>` | Direct task to `recon`, `audit`, `exploit`, `report`, `cloudsec`, or `apisec` |
+| `/agent` | `/agent <name>` | Direct task to `dev`, `recon`, `audit`, `exploit`, `report` |
 | `/skill` | `/skill [list\|<name>]` | Discover or toggle specialized agent skills |
 | `/mcp` | `/mcp [list\|add\|enable]` | Manage Model Context Protocol external servers |
 | `/config` | `/config` | Inspect runtime model parameters, safety modes, and rules |
@@ -86,6 +93,22 @@ Located at the very top of your terminal:
 | `/report` | `/report` | Compile and export full SecOps report |
 | `/clear` | `/clear` | Clear chat log |
 | `/quit` | `/quit` | Exit ScopeForge |
+
+---
+
+## 4.1 Claude Code Developer Toolset
+
+ScopeForge provides the full developer toolset found in Claude Code and Open Code:
+
+- **`view_file(file_path, start_line, end_line)`**: Inspect code and configuration files with 1-indexed line numbers.
+- **`edit_file(file_path, target_content, replacement_content)`**: Surgical, exact-match code refactoring and replacements.
+- **`write_file(file_path, content, overwrite)`**: Create new files or overwrite existing files safely.
+- **`glob_files(pattern, directory)`**: Fast file pattern matching across the repository tree (ignoring `.git`, `.venv`, `node_modules`).
+- **`grep_search(query, directory, file_pattern)`**: Regex and keyword search across file contents with matching lines and file paths.
+- **`git_diff_tool(staged)`**: Native git diff inspection for working tree or staged changes.
+- **`git_status_tool()`**: Repository status, active branch, and untracked files.
+- **`git_commit_tool(message)`**: Safe commit execution.
+
 
 ---
 
