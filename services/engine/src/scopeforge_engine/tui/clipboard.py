@@ -246,6 +246,10 @@ def deduplicate_doubled_text(val: str) -> str:
     if not val or len(val) < 6:
         return val
     s = val.strip()
+    # Check split by whitespace (e.g. "token token" or "url\nurl")
+    parts = s.split()
+    if len(parts) == 2 and parts[0] == parts[1] and len(parts[0]) >= 3:
+        return parts[0]
     if len(s) % 2 == 0:
         half = len(s) // 2
         first, second = s[:half], s[half:]

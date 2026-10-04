@@ -10,6 +10,7 @@ from textual.widgets.option_list import Option
 
 from ...llm_providers.manager import ProviderManager
 from ...llm_providers.models import LLMConfig, ProviderType
+from ..clipboard import deduplicate_doubled_text
 from ..widgets.clipboard_input import ClipboardInput
 
 
@@ -307,10 +308,11 @@ class ModelPickerModal(ModalScreen[str]):
 
     def _read_custom_inputs(self) -> Tuple[str, str, Optional[str], str, str, float, int]:
         """Read raw custom-form inputs. Returns (name, model, key, base, provider, temp, max_tokens)."""
-        name = self.query_one("#inp-cfg-name", Input).value.strip()
-        model = self.query_one("#inp-cfg-model", Input).value.strip()
-        key = self.query_one("#inp-cfg-key", Input).value.strip() or None
-        base = self.query_one("#inp-cfg-base", Input).value.strip()
+        name = deduplicate_doubled_text(self.query_one("#inp-cfg-name", Input).value.strip())
+        model = deduplicate_doubled_text(self.query_one("#inp-cfg-model", Input).value.strip())
+        raw_key = deduplicate_doubled_text(self.query_one("#inp-cfg-key", Input).value.strip())
+        key = ProviderManager._sanitize_api_key(raw_key) if raw_key else None
+        base = deduplicate_doubled_text(self.query_one("#inp-cfg-base", Input).value.strip())
         try:
             provider_sel = self.query_one("#inp-cfg-provider", Select)
             provider = str(provider_sel.value or "auto").strip().lower()
@@ -346,8 +348,6 @@ class ModelPickerModal(ModalScreen[str]):
             elif base:
                 # Custom proxy URL (e.g. apmix.ai, deepseek.com, together.xyz) is OpenAI-compatible
                 provider = "custom"
-        elif provider == "anthropic" and base and "anthropic" not in base.lower():
-            provider = "custom"
 
         # Auto-fill base_url if left blank for known platforms
         if not base:

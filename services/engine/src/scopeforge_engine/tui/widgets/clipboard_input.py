@@ -36,8 +36,8 @@ class ClipboardInput(Input):
         import time
         now = time.monotonic()
         elapsed = now - self._last_paste_time
-        if elapsed < 0.45:
-            if text == self._last_paste_text or (text and text in self._last_paste_text):
+        if elapsed < 0.8:
+            if text == self._last_paste_text or (text and text in self._last_paste_text) or (self._last_paste_text and self._last_paste_text in text):
                 return True
         self._last_paste_text = text
         self._last_paste_time = now
@@ -81,14 +81,15 @@ class ClipboardInput(Input):
 
     def _on_paste(self, event: events.Paste) -> None:
         """Handle bracketed paste event emitted by terminal emulators."""
+        # Prevent Textual's MRO dispatcher from running Input._on_paste (which duplicates insertion)
+        event.prevent_default()
+        event.stop()
         if event.text:
             cleaned = clean_pasted_text(event.text, single_line=True)
             if self._is_duplicate_paste(cleaned):
-                event.stop()
                 return
             selection = self.selection
             if selection.is_empty:
                 self.insert_text_at_cursor(cleaned)
             else:
                 self.replace(cleaned, *selection)
-        event.stop()

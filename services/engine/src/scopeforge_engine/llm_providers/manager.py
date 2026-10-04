@@ -251,8 +251,8 @@ class ProviderManager:
         """Self-heal stale persisted configs (old base URLs, missing headers, retired slugs, wrong providers)."""
         cfg.api_key = ProviderManager._sanitize_api_key(cfg.api_key)
 
-        # Heal configs where provider is ANTHROPIC but api_base is a third-party OpenAI-compatible proxy (e.g. apmix.ai)
-        if cfg.provider == ProviderType.ANTHROPIC and cfg.api_base and "anthropic" not in cfg.api_base.lower():
+        # Heal configs where provider is ANTHROPIC but api_base is a known OpenAI-only proxy (e.g. apmix.ai, deepseek)
+        if cfg.provider == ProviderType.ANTHROPIC and cfg.api_base and ("apmix.ai" in cfg.api_base.lower() or "deepseek" in cfg.api_base.lower()):
             cfg.provider = ProviderType.CUSTOM
 
         cfg.api_base = ProviderManager._normalize_base_for_provider(cfg.provider, cfg.api_base)
@@ -345,9 +345,9 @@ class ProviderManager:
         if provider:
             try:
                 ptype = ProviderType(provider.lower())
-                # If provider was set to anthropic, but api_base is a third-party proxy,
-                # third-party proxies serve Claude models via OpenAI-compatible API:
-                if ptype == ProviderType.ANTHROPIC and api_base and "anthropic" not in api_base.lower():
+                # If provider was set to anthropic, but api_base is a known OpenAI-only proxy,
+                # third-party proxies serve models via OpenAI-compatible API:
+                if ptype == ProviderType.ANTHROPIC and api_base and ("apmix.ai" in api_base.lower() or "deepseek" in api_base.lower()):
                     ptype = ProviderType.CUSTOM
             except Exception:
                 ptype = ProviderType.CUSTOM
