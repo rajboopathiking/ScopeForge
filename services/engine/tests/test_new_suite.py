@@ -33,6 +33,56 @@ def test_provider_manager():
     assert chat_model is not None
 
 
+def test_custom_provider_normalization_and_deduplication():
+    # Test key sanitization and deduplication
+    doubled = "apx_live_test12345apx_live_test12345"
+    assert ProviderManager._sanitize_api_key(doubled) == "apx_live_test12345"
+
+    bearer_paste = "Bearer apx_live_test67890"
+    assert ProviderManager._sanitize_api_key(bearer_paste) == "apx_live_test67890"
+
+    curl_paste = "curl -H 'Authorization: Bearer sk-ant-secret123' https://api.anthropic.com"
+    assert ProviderManager._sanitize_api_key(curl_paste) == "sk-ant-secret123"
+
+    # Test base URL normalization
+    assert ProviderManager._normalize_base_for_provider(ProviderType.CUSTOM, "https://api.apmix.ai") == "https://api.apmix.ai/v1"
+    assert ProviderManager._normalize_base_for_provider(ProviderType.CUSTOM, "https://api.apmix.ai/v1") == "https://api.apmix.ai/v1"
+    assert ProviderManager._normalize_base_for_provider(ProviderType.CUSTOM, "https://api.apmix.ai/chat/completions") == "https://api.apmix.ai/v1"
+    assert ProviderManager._normalize_base_for_provider(ProviderType.OPENROUTER, "https://openrouter.ai") == "https://openrouter.ai/api/v1"
+    assert ProviderManager._normalize_base_for_provider(ProviderType.OLLAMA, "http://localhost:11434") == "http://localhost:11434/v1"
+
+    # Test add_custom_provider with third-party proxy for Claude
+    mgr = ProviderManager()
+    cfg = mgr.add_custom_provider(
+        name="test-apmix-claude",
+        model="claude-sonnet-4-6-free",
+        api_key="apx_live_testkeyapx_live_testkey",
+        api_base="https://api.apmix.ai",
+        set_active=False,
+    )
+    assert cfg.provider == ProviderType.CUSTOM
+    assert cfg.api_base == "https://api.apmix.ai/v1"
+    assert cfg.api_key == "apx_live_testkey"
+
+    # Test self-healing migration of legacy misconfigured proxy
+    from scopeforge_engine.llm_providers.models import LLMConfig
+    legacy_cfg = LLMConfig(
+        name="test-legacy-claude",
+        provider=ProviderType.ANTHROPIC,
+        model="claude-sonnet-4-6-free",
+        api_key="apx_live_heal123apx_live_heal123",
+        api_base="https://api.apmix.ai",
+    )
+    healed = ProviderManager._migrate_config(legacy_cfg)
+    assert healed.provider == ProviderType.CUSTOM
+    assert healed.api_base == "https://api.apmix.ai/v1"
+    assert healed.api_key == "apx_live_heal123"
+
+    # Clean up test provider
+    mgr.providers.pop("test-apmix-claude", None)
+    mgr.save_config()
+
+
 def test_scopegate_middleware():
     gate = ScopeGateMiddleware(authorized_scopes=["authorized.example"], mode="plan")
     

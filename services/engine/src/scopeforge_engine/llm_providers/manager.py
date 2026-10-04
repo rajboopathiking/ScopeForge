@@ -80,14 +80,52 @@ class ProviderManager:
 
     @staticmethod
     def _sanitize_api_key(raw_key: Optional[str]) -> Optional[str]:
-        """Strip quotes, backslashes, bearer prefix, or extract key from pasted curl snippets."""
+        """Strip quotes, backslashes, bearer prefix, deduplicate double-pastes, or extract key from pasted curl snippets."""
         if not raw_key:
             return None
         text = str(raw_key).strip().strip("'\"\\ \t\r\n")
+        if not text:
+            return None
+
         import re
-        m = re.search(r"(sk-or-v1-[A-Za-z0-9_-]+|sk-ant-[A-Za-z0-9_-]+|gsk_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+)", text)
+
+        # Extract Authorization: Bearer <key> from pasted curl commands or headers
+        bearer_m = re.search(r"Bearer\s+([A-Za-z0-9_.-]+)", text, re.IGNORECASE)
+        if bearer_m:
+            text = bearer_m.group(1).strip()
+
+        # Deduplicate split pastes e.g. "key key" or "key,key" or "key;key"
+        parts = [p.strip() for p in re.split(r"[\s,;]+", text) if p.strip()]
+        if len(parts) >= 2 and all(p == parts[0] for p in parts):
+            text = parts[0]
+
+        # Deduplicate exact halves concatenated e.g. "keykey"
+        if len(text) >= 16 and len(text) % 2 == 0:
+            half = len(text) // 2
+            if text[:half] == text[half:]:
+                text = text[:half]
+
+        # Deduplicate repeated prefix e.g. apx_live_...apx_live_...
+        for pfx in ("apx_live_", "apx_", "sk-or-v1-", "sk-ant-", "gsk_", "sk-", "hf_"):
+            if text.startswith(pfx):
+                second_idx = text.find(pfx, len(pfx))
+                if second_idx > 0 and text[:second_idx] == text[second_idx:]:
+                    text = text[:second_idx]
+                    break
+
+        # Extract known key patterns if wrapped or embedded
+        m = re.search(
+            r"(apx_live_[A-Za-z0-9_-]+|apx_[A-Za-z0-9_-]+|sk-or-v1-[A-Za-z0-9_-]+|sk-ant-[A-Za-z0-9_-]+|gsk_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+|hf_[A-Za-z0-9_-]+)",
+            text,
+        )
         if m:
-            return m.group(1).strip()
+            extracted = m.group(1).strip()
+            if len(extracted) >= 16 and len(extracted) % 2 == 0:
+                half = len(extracted) // 2
+                if extracted[:half] == extracted[half:]:
+                    extracted = extracted[:half]
+            return extracted
+
         if text.lower().startswith("bearer "):
             text = text[7:].strip()
         if text.startswith("curl ") or text.startswith("http"):
@@ -123,10 +161,14 @@ class ProviderManager:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
                 custom_list = data.get("providers", {})
+                migrated_any = False
                 for name, p_data in custom_list.items():
                     try:
                         cfg = LLMConfig(**p_data)
+                        old_json = cfg.model_dump(mode="json")
                         cfg = self._migrate_config(cfg)
+                        if cfg.model_dump(mode="json") != old_json:
+                            migrated_any = True
                         self.providers[name] = cfg
                         if name not in DEFAULT_PROVIDERS and name != "mock-secops":
                             self.custom_provider_names.add(name)
@@ -175,17 +217,49 @@ class ProviderManager:
             if nb.endswith(suffix):
                 nb = nb[: -len(suffix)].rstrip("/")
                 break
-        if provider == ProviderType.OLLAMA:
+
+        if provider == ProviderType.OPENROUTER or "openrouter.ai" in nb.lower():
+            if nb.endswith("/api"):
+                nb = nb + "/v1"
+            elif not nb.endswith("/v1"):
+                nb = nb + "/api/v1"
+        elif provider == ProviderType.OLLAMA:
             if nb.endswith("/api"):
                 nb = nb[: -len("/api")] + "/v1"
             if not nb.endswith("/v1"):
                 nb = nb + "/v1"
+        elif provider == ProviderType.GROQ or "api.groq.com" in nb.lower():
+            if nb in ("https://api.groq.com", "http://api.groq.com"):
+                nb = nb + "/openai/v1"
+            elif nb.endswith("/openai"):
+                nb = nb + "/v1"
+            elif not nb.endswith("/v1"):
+                nb = nb + "/v1"
+        elif provider in (ProviderType.CUSTOM, ProviderType.OPENAI):
+            from urllib.parse import urlparse
+            p = urlparse(nb)
+            path = (p.path or "").rstrip("/")
+            if not path or path == "/api":
+                nb = nb.rstrip("/") + ("/v1" if path != "/api" else "/v1")
+            elif not (
+                path.endswith("/v1")
+                or path.endswith("/v2")
+                or path.endswith("/v3")
+                or path.endswith("/v1beta")
+                or "/v1" in path
+            ):
+                nb = nb.rstrip("/") + "/v1"
         return nb
 
     @staticmethod
     def _migrate_config(cfg: LLMConfig) -> LLMConfig:
-        """Self-heal stale persisted configs (old base URLs, missing headers, retired slugs)."""
+        """Self-heal stale persisted configs (old base URLs, missing headers, retired slugs, wrong providers)."""
         cfg.api_key = ProviderManager._sanitize_api_key(cfg.api_key)
+
+        # Heal configs where provider is ANTHROPIC but api_base is a third-party OpenAI-compatible proxy (e.g. apmix.ai)
+        if cfg.provider == ProviderType.ANTHROPIC and cfg.api_base and "anthropic" not in cfg.api_base.lower():
+            cfg.provider = ProviderType.CUSTOM
+
         cfg.api_base = ProviderManager._normalize_base_for_provider(cfg.provider, cfg.api_base)
         # Heal retired 404 slugs
         retired_slugs = {
@@ -276,6 +350,10 @@ class ProviderManager:
         if provider:
             try:
                 ptype = ProviderType(provider.lower())
+                # If provider was set to anthropic, but api_base is a third-party proxy,
+                # third-party proxies serve Claude models via OpenAI-compatible API:
+                if ptype == ProviderType.ANTHROPIC and api_base and "anthropic" not in api_base.lower():
+                    ptype = ProviderType.CUSTOM
             except Exception:
                 ptype = ProviderType.CUSTOM
         elif api_base and "openrouter.ai" in api_base:
@@ -287,6 +365,10 @@ class ProviderManager:
         elif api_base and ("localhost:11434" in api_base or "ollama" in api_base.lower()):
             ptype = ProviderType.OLLAMA
         elif api_base and ("localhost:8000" in api_base or "vllm" in api_base.lower()):
+            ptype = ProviderType.CUSTOM
+        elif api_base:
+            # Custom proxy endpoints (apmix.ai, deepseek.com, together.xyz, etc.)
+            # speak OpenAI-compatible /chat/completions protocol
             ptype = ProviderType.CUSTOM
         elif "openrouter" in model.lower():
             ptype = ProviderType.OPENROUTER

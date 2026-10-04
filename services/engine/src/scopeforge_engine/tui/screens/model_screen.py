@@ -315,12 +315,19 @@ class ModelPickerModal(ModalScreen[str]):
                 provider = "openrouter"
             elif "groq" in model.lower() or (base and "groq" in base):
                 provider = "groq"
-            elif "claude" in model.lower() or (base and "anthropic" in base):
+            elif base and "anthropic" in base:
+                provider = "anthropic"
+            elif not base and "claude" in model.lower():
                 provider = "anthropic"
             elif "ollama" in model.lower() or (base and "11434" in base):
                 provider = "ollama"
-            elif "gpt" in model.lower() or (base and "openai" in base):
+            elif not base and ("gpt" in model.lower() or "o1" in model.lower()):
                 provider = "openai"
+            elif base:
+                # Custom proxy URL (e.g. apmix.ai, deepseek.com, together.xyz) is OpenAI-compatible
+                provider = "custom"
+        elif provider == "anthropic" and base and "anthropic" not in base.lower():
+            provider = "custom"
 
         # Auto-fill base_url if left blank for known platforms
         if not base:
