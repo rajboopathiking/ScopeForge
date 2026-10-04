@@ -568,3 +568,19 @@ async def test_dynamic_recon_and_audit_node_extraction():
     assert audit_res["active_agent"] == "audit"
     audit_text = audit_res["messages"][-1].content
     assert "CVE-2023-44487" in audit_text
+
+
+def test_clipboard_duplicate_paste_prevention():
+    from scopeforge_engine.tui.clipboard import clean_pasted_text, deduplicate_doubled_text
+    from scopeforge_engine.tui.widgets.clipboard_input import ClipboardInput
+
+    # 1. Test string deduplication
+    assert deduplicate_doubled_text("apx_live_test123apx_live_test123") == "apx_live_test123"
+    assert deduplicate_doubled_text("https://api.deepseek.comhttps://api.deepseek.com") == "https://api.deepseek.com"
+    assert clean_pasted_text("model-id-123model-id-123") == "model-id-123"
+
+    # 2. Test widget debounce
+    inp = ClipboardInput()
+    assert inp._is_duplicate_paste("my-api-key") is False
+    # Immediate second paste of same text within 450ms is detected as duplicate
+    assert inp._is_duplicate_paste("my-api-key") is True

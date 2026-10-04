@@ -241,8 +241,22 @@ def paste_from_system_clipboard() -> str:
     return ""
 
 
+def deduplicate_doubled_text(val: str) -> str:
+    """If terminal or clipboard duplicate-pasted string into doubled halves (e.g. keykey or urlurl), collapse it."""
+    if not val or len(val) < 6:
+        return val
+    s = val.strip()
+    if len(s) % 2 == 0:
+        half = len(s) // 2
+        first, second = s[:half], s[half:]
+        # If both halves are identical and not just a repeated single character like '------'
+        if first == second and len(set(first)) > 1:
+            return first
+    return val
+
+
 def clean_pasted_text(text: str, single_line: bool = False) -> str:
-    """Normalize and sanitize pasted text.
+    """Normalize, sanitize, and de-duplicate pasted text.
 
     If `single_line` is True, multiple lines are converted into spaces
     so that multi-line pastes into single-line inputs (e.g. prompt bars, API keys)
@@ -254,5 +268,7 @@ def clean_pasted_text(text: str, single_line: bool = False) -> str:
     text = "".join(ch for ch in text if ch in "\n\r\t" or ord(ch) >= 32)
     if single_line:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return " ".join(lines)
-    return text.strip("\r\n")
+        res = " ".join(lines)
+    else:
+        res = text.strip("\r\n")
+    return deduplicate_doubled_text(res)

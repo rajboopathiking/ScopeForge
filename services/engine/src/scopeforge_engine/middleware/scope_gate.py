@@ -23,7 +23,7 @@ class ScopeGateMiddleware(BaseMiddleware):
         mode: str = "plan",
     ):
         super().__init__(name="ScopeGate", priority=10)
-        self.authorized_scopes: Set[str] = set(authorized_scopes or ["authorized.example", "*.example.com", "localhost", "127.0.0.1"])
+        self.authorized_scopes: Set[str] = set(authorized_scopes or ["authorized.example", "*.example.com", "localhost", "127.0.0.1", "thangarsamyal.vercel.app"])
         self.forbidden_scopes: Set[str] = set(forbidden_scopes or ["*.gov", "*.mil", "production.bank.com"])
         self.mode: str = mode.lower()  # "plan", "artifacts", "live"
 

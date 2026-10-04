@@ -26,6 +26,23 @@ class ClipboardInput(Input):
         Binding("ctrl+c", "copy", "Copy to OS clipboard", show=False),
     ]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._last_paste_text: str = ""
+        self._last_paste_time: float = 0.0
+
+    def _is_duplicate_paste(self, text: str) -> bool:
+        """Debounce rapid duplicate paste events emitted by terminal emulators."""
+        import time
+        now = time.monotonic()
+        elapsed = now - self._last_paste_time
+        if elapsed < 0.45:
+            if text == self._last_paste_text or (text and text in self._last_paste_text):
+                return True
+        self._last_paste_text = text
+        self._last_paste_time = now
+        return False
+
     def action_paste(self) -> None:
         """Paste from system clipboard or local fallback."""
         text = paste_from_system_clipboard()
@@ -33,6 +50,8 @@ class ClipboardInput(Input):
             text = str(self.app.clipboard or "")
         if text:
             cleaned = clean_pasted_text(text, single_line=True)
+            if self._is_duplicate_paste(cleaned):
+                return
             start, end = self.selection
             self.replace(cleaned, start, end)
 
@@ -64,6 +83,9 @@ class ClipboardInput(Input):
         """Handle bracketed paste event emitted by terminal emulators."""
         if event.text:
             cleaned = clean_pasted_text(event.text, single_line=True)
+            if self._is_duplicate_paste(cleaned):
+                event.stop()
+                return
             selection = self.selection
             if selection.is_empty:
                 self.insert_text_at_cursor(cleaned)

@@ -52,16 +52,19 @@ Located at the very top of your terminal:
 
 ## 3. Keyboard Shortcuts
 
-| Key | Action |
-|---|---|
-| <kbd>F1</kbd> | Open interactive Help & Documentation modal |
-| <kbd>F2</kbd> | Toggle Right Sidebar on / off |
-| <kbd>F3</kbd> | Cycle Safety Mode (`PLAN` ➔ `ARTIFACTS` ➔ `LIVE`) |
-| <kbd>F4</kbd> | Open LLM Wiki & User Preferences Viewer / Editor |
-| <kbd>F5</kbd> | Clear terminal conversation history |
-| <kbd>Tab</kbd> | Switch navigation focus between prompt and sidebar |
-| <kbd>Esc</kbd> | Close any open modal screen |
-| <kbd>Ctrl+C</kbd> | Graceful exit |
+| Shortcut | Secondary | Action | Description |
+|:---:|:---:|:---|:---|
+| <kbd>Ctrl+M</kbd> | <kbd>F1</kbd> | **Model Switcher** | Open live model picker, filter presets, or configure custom endpoints |
+| <kbd>Ctrl+H</kbd> | <kbd>F2</kbd> | **Help Cheatsheet** | Show all slash commands, shortcuts, and agent roles |
+| <kbd>Ctrl+O</kbd> | <kbd>F3</kbd> | **Toggle SecOps Mode** | Cycle policy gates (`plan` ↔ `live` ↔ `artifacts`) |
+| <kbd>Ctrl+B</kbd> | <kbd>F4</kbd> | **Toggle Sidebar** | Expand or collapse agent telemetry and finding ledger |
+| <kbd>Ctrl+W</kbd> | <kbd>F5</kbd> | **SecOps Wiki** | Open persistent knowledge base and user preferences |
+| <kbd>Ctrl+Y</kbd> | <kbd>F6</kbd> | **Copy Last Response** | Copy the latest AI response to system clipboard |
+| <kbd>Ctrl+T</kbd> | <kbd>F7</kbd> | **Toggle Native Mouse** | Switch between TUI clicks and terminal text selection |
+| <kbd>Ctrl+L</kbd> | — | **Clear Screen** | Clear conversation stream and reset buffer |
+| <kbd>Ctrl+Q</kbd> | — | **Quit** | Safely exit ScopeForge |
+| <kbd>Tab</kbd> | — | **Focus Switch** | Switch navigation focus between prompt and sidebar |
+| <kbd>Esc</kbd> | — | **Close Modal** | Close any open modal screen |
 
 ---
 

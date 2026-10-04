@@ -46,32 +46,47 @@ pnpm lint && pnpm test && uv run pytest && node scripts/generate-protocol.mjs --
 
 ### Modern Terminal UI (Claude Code & Open Code style)
 
-ScopeForge features a cutting-edge terminal UI built with **Python Textual**, **LangChain**, **LangGraph**, **LlamaIndex RAG**, and **A2A Protocol**:
+ScopeForge is available as a pip/PyPI package and launches directly from your command line:
 
 ```bash
-# Launch the Textual TUI
-python scopeforge_tui.py
-# Or via entrypoint:
-uv run scopeforge-tui
+# Install via pipx / pip:
+pip install scopeforge
+# Or run instantly with zero installation via uv:
+uvx scopeforge
+
+# Launch the interactive Claude Code style TUI:
+scopeforge
+# Or shorthand:
+sf
 ```
 
-**Key Features:**
+**Key Capabilities:**
 - **Sleek Claude Code / Open Code Look & Feel**: Modern dark theme, status pills (`[Model]`, `[Mode]`, `[Scope]`, `[Tokens]`), collapsible tool cards, markdown rendering, and finding badges.
-- **In-Terminal Model & Provider Configuration Center**: Configure, auto-fill, and hot-swap any model entirely within the TUI (`/model` or `/config model`) with zero YAML editing.
-- **OpenRouter Free Tier Integration**: Out-of-the-box zero-cost models (`openrouter/free`, `deepseek/deepseek-r1:free`, `meta-llama/llama-3.3-70b-instruct:free`, `google/gemini-2.0-flash-exp:free`).
-- **Claude Code Developer Toolset**: Native file inspection (`view_file`), surgical editing (`edit_file`), file creation (`write_file`), glob search (`glob_files`), regex search (`grep_search`), and git operations (`git_diff_tool`, `git_status_tool`, `git_commit_tool`).
-- **Claude Code Slash Commands**: Full command suite including `/init` (`SCOPEFORGE.md` project memory), `/diff`, `/commit`, `/review`, `/compact`, `/doctor`, `/pr`, and `/cost`.
-- **General LLM Q&A & Architecture Assistant**: General queries are answered directly by the active model Supervisor, while security actions engage specialized agents with ScopeGate RoE safety.
-- **LangGraph Multi-Agent Team**: `Supervisor`, `DevAgent`, `ReconAgent`, `AuditAgent`, `ExploitAgent`, `ReportAgent`, plus custom agents loaded from `.scopeforge/agents/`.
-- **A2A Protocol (Agent-to-Agent)**: Cryptographically signed inter-agent communication bus for task delegation, consensus, and handovers.
-- **LlamaIndex RAG**: Embedded cybersecurity knowledge base (OWASP Top 10, CVE advisories, bug bounty RoE) with `/rag <query>` and `/rag ingest <path>`.
-- **LLM Wiki & User Preferences**: Persistent memory (`preferences.md`, `targets.md`, `playbooks.md`) with automatic context injection and interactive `/wiki` editor.
-- **Specialized Skills System (`SKILL.md`)**: Modular skills in `skills/` and `.scopeforge/skills/` with auto-detection triggers.
-- **Model Context Protocol (MCP)**: Dynamically connect and run tools from MCP servers.
+- **Autonomous LangChain Tool Harness**: Real iterative tool calling loop (`bind_tools`) for bash execution (`bash_cli`), live web search (`google_web_search`), code inspection (`view_file`), surgical editing (`edit_file`), and dynamic security auditing.
+- **In-Terminal Model Switcher & Setup (<kbd>Ctrl+M</kbd>)**: Native `ContentSwitcher` model picker modal with live preset filtering and custom API endpoint setup (no duplicate screens or phantom focus).
+- **Zero-Duplicate Terminal Paste**: Two-layer paste debouncing and doubled string collapsing (`deduplicate_doubled_text`) eliminates terminal duplicate paste artifacts.
+- **OpenRouter Free Tier Integration**: Out-of-the-box zero-cost models (`openrouter/free`, `openrouter/free-nemotron`, `groq-llama3`, `ollama-llama3`).
+- **Modern `Ctrl+[key]` Keybindings**: Standard terminal shortcuts (`Ctrl+M`, `Ctrl+H`, `Ctrl+B`, `Ctrl+O`, `Ctrl+W`, `Ctrl+Y`, `Ctrl+T`, `Ctrl+L`, `Ctrl+Q`).
+- **Claude Code Slash Commands**: Full command suite including `/init` (`SCOPEFORGE.md` project memory), `/diff`, `/commit`, `/review`, `/search`, `/bash`, `/mcp`, `/skill`, `/compact`, `/doctor`, `/pr`, and `/cost`.
+- **LangGraph Multi-Agent Team**: `Supervisor`, `DevAgent`, `ReconAgent`, `AuditAgent`, `ExploitAgent`, `ReportAgent`, communicating via cryptographic A2A Protocol bus.
+- **LlamaIndex RAG & LLM Wiki**: Embedded cybersecurity knowledge base with `/rag` and persistent memory with `/wiki`.
+- **Model Context Protocol (MCP)**: Discover, register, and run tools from any MCP server via `/mcp`.
+
+| Shortcut | Secondary | Action | Description |
+|:---:|:---:|:---|:---|
+| <kbd>Ctrl+M</kbd> | <kbd>F1</kbd> | **Model Switcher** | Open live model picker, filter presets, or configure custom endpoints |
+| <kbd>Ctrl+H</kbd> | <kbd>F2</kbd> | **Help Cheatsheet** | Show all slash commands, shortcuts, and agent roles |
+| <kbd>Ctrl+O</kbd> | <kbd>F3</kbd> | **Toggle SecOps Mode** | Cycle policy gates (`plan` ↔ `live` ↔ `artifacts`) |
+| <kbd>Ctrl+B</kbd> | <kbd>F4</kbd> | **Toggle Sidebar** | Expand or collapse agent telemetry and finding ledger |
+| <kbd>Ctrl+W</kbd> | <kbd>F5</kbd> | **SecOps Wiki** | Open persistent knowledge base and user preferences |
+| <kbd>Ctrl+Y</kbd> | <kbd>F6</kbd> | **Copy Last Response** | Copy the latest AI response to system clipboard |
+| <kbd>Ctrl+T</kbd> | <kbd>F7</kbd> | **Toggle Native Mouse** | Switch between TUI clicks and terminal text selection |
+| <kbd>Ctrl+L</kbd> | — | **Clear Screen** | Clear conversation stream and reset buffer |
+| <kbd>Ctrl+Q</kbd> | — | **Quit** | Safely exit ScopeForge |
 
 **Documentation:**
 - **[Master Manual (docs/SCOPEFORGE_MANUAL.md)](docs/SCOPEFORGE_MANUAL.md)**: Exhaustive manual covering TUI, LangGraph, RAG, Wiki, Skills, MCP, RoE, and Benchmarks.
-- **[TUI Guide (docs/tui_guide.md)](docs/tui_guide.md)**: Full terminal UI navigation, layout, keybindings (<kbd>F1</kbd>-<kbd>F5</kbd>), slash commands, and in-terminal configuration center.
+- **[TUI Guide (docs/tui_guide.md)](docs/tui_guide.md)**: Full terminal UI navigation, layout, modern keybindings, slash commands, and in-terminal configuration center.
 - **[Models & Config (docs/models_and_config.md)](docs/models_and_config.md)**: In-terminal configuration center, OpenRouter Free models, provider setup, hot-swapping, and general Q&A.
 - **[Specialized Skills (docs/skills.md)](docs/skills.md)**: Creating custom skills (`SKILL.md`), YAML frontmatter, triggers, and auto-activation.
 - **[MCP Customization (docs/mcp.md)](docs/mcp.md)**: Connecting MCP stdio servers, permissions, and tool execution with ScopeGate.

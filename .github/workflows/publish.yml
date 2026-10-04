@@ -1,0 +1,77 @@
+name: Publish ScopeForge to PyPI
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (build only, do not upload to PyPI)"
+        required: false
+        default: false
+        type: boolean
+      test_pypi:
+        description: "Publish to TestPyPI instead of production PyPI"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build-and-publish:
+    name: Build & Publish to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for PyPI Trusted Publishing (OIDC)
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Run test suite verification
+        run: |
+          uv sync --python 3.12 --all-extras --all-packages
+          uv run pytest services/engine/tests/ -v
+
+      - name: Build sdist and wheel
+        run: |
+          uv build services/engine --out-dir dist/
+          ls -la dist/
+
+      - name: Check distributions
+        run: |
+          uv tool run twine check dist/*
+
+      - name: Publish to TestPyPI
+        if: ${{ github.event.inputs.test_pypi == 'true' && github.event.inputs.dry_run != 'true' }}
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN || secrets.PYPI_API_TOKEN }}
+        run: |
+          uv publish --publish-url https://test.pypi.org/legacy/ dist/*
+
+      - name: Publish to PyPI
+        if: ${{ github.event.inputs.test_pypi != 'true' && github.event.inputs.dry_run != 'true' }}
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "$UV_PUBLISH_TOKEN" ]; then
+            uv publish dist/*
+          else
+            echo "No UV_PUBLISH_TOKEN secret found, attempting OIDC Trusted Publishing..."
+            uv publish --trusted-publishing automatic dist/*
+          fi
