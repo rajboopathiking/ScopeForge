@@ -15,6 +15,7 @@ from pathlib import Path
 from ..a2a.bus import A2ABus
 from ..a2a.protocol import A2AIntent, A2AMessage
 from ..llm_providers.manager import ProviderManager
+from ..llm_providers.models import LLMConfig, ProviderType
 from ..middleware.pipeline import MiddlewarePipeline, create_default_pipeline
 from ..rag.engine import LlamaSecRAG
 from ..sec_tools import (
@@ -286,17 +287,25 @@ class MultiAgentSecOpsOrchestrator:
                 # Automatic Resilience: If a model fails with 429 rate limit or 404/402,
                 # auto-fallback to the resilient openrouter/free meta-router.
                 fallback_success = False
-                if active_cfg.model != "openrouter/free" and (
-                    active_cfg.provider == ProviderType.OPENROUTER or "openrouter" in str(active_cfg.api_base)
-                ):
+                is_openrouter = (
+                    active_cfg.provider == ProviderType.OPENROUTER
+                    or getattr(active_cfg.provider, "value", str(active_cfg.provider)).lower() == "openrouter"
+                    or "openrouter" in str(active_cfg.api_base or "").lower()
+                )
+                if active_cfg.model != "openrouter/free" and is_openrouter:
                     try:
+                        import os
                         from ..llm_providers.factory import create_chat_model
-                        from ..llm_providers.models import LLMConfig
+                        fb_key = (
+                            active_cfg.api_key
+                            or os.getenv("OPENROUTER_API_KEY")
+                            or getattr(self.provider_mgr.providers.get("openrouter-free"), "api_key", None)
+                        )
                         fb_cfg = LLMConfig(
                             name="openrouter-free-fallback",
                             provider=ProviderType.OPENROUTER,
                             model="openrouter/free",
-                            api_key=active_cfg.api_key,
+                            api_key=fb_key,
                             api_base="https://openrouter.ai/api/v1",
                             temperature=0.2,
                             extra_headers={
