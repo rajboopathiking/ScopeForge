@@ -43,7 +43,21 @@ class ClipboardInput(Input):
             copy_to_system_clipboard(selected_text)
             if hasattr(self.app, "copy_to_clipboard"):
                 self.app.copy_to_clipboard(selected_text)
+            if hasattr(self.app, "notify"):
+                self.app.notify("✓ Copied selection to clipboard", title="ScopeForge Clipboard")
         else:
+            # Fall back to screen text selection if user highlighted text in terminal
+            try:
+                screen_selected = self.screen.get_selected_text()
+                if screen_selected:
+                    copy_to_system_clipboard(screen_selected)
+                    if hasattr(self.app, "copy_to_clipboard"):
+                        self.app.copy_to_clipboard(screen_selected)
+                    if hasattr(self.app, "notify"):
+                        self.app.notify("✓ Copied selection to clipboard", title="ScopeForge Clipboard")
+                    return
+            except Exception:
+                pass
             raise SkipAction()
 
     def _on_paste(self, event: events.Paste) -> None:

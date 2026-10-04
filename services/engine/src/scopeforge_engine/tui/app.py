@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from langchain_core.messages import AIMessage, HumanMessage
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -43,7 +44,9 @@ class ScopeForgeTUIApp(App):
         Binding("f4", "open_wiki", "Wiki Memory", show=True),
         Binding("f5", "clear_chat", "Clear", show=True),
         Binding("f6", "copy_last_response", "Copy Last", show=True),
+        Binding("f7", "toggle_mouse_capture", "Mouse Mode", show=True),
         Binding("ctrl+y", "copy_last_response", "Copy Last", show=False),
+        Binding("super+c", "handle_ctrl_c", "Copy Selection", show=False),
         Binding("ctrl+c", "handle_ctrl_c", "Quit / Copy", show=False),
         Binding("ctrl+q", "quit_app", "Quit", show=True),
     ]
@@ -95,6 +98,16 @@ class ScopeForgeTUIApp(App):
         except Exception:
             self._clipboard = text
         copy_to_system_clipboard(text)
+
+    def on_text_selected(self, event: events.TextSelected) -> None:
+        """Automatically copy highlighted text to OS system clipboard upon mouse selection."""
+        try:
+            selected = self.screen.get_selected_text()
+            if selected:
+                self.copy_to_clipboard(selected)
+                self.notify("✓ Copied selection to clipboard", title="ScopeForge Clipboard")
+        except Exception:
+            pass
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header-bar")
@@ -225,25 +238,36 @@ class ScopeForgeTUIApp(App):
         if action in ("/help", "/?"):
             self.action_show_help()
 
-        elif action == "/copy":
+        elif action in ("/copy", "/cp"):
             tokens = cmd.strip().split()
             sub = tokens[1].lower() if len(tokens) > 1 else "last"
             if sub in ("last", "response"):
                 self.action_copy_last_response()
-            elif sub in ("all", "full", "transcript", "history"):
+            elif sub in ("all", "full", "transcript", "history", "log", "screen"):
                 transcript = chat.get_full_transcript()
                 self.copy_to_clipboard(transcript)
                 turns = len(chat.transcript)
-                chat.add_agent_message("Supervisor", f"📋 ✓ Copied full conversation transcript ({turns} messages) to system clipboard.")
+                chat.add_agent_message("Supervisor", f"📋 ✓ Copied full conversation transcript ({turns} messages) to system clipboard.", record_as_last_response=False)
                 self.notify(f"Copied {turns} messages to clipboard", title="ScopeForge Clipboard")
             elif sub in ("code", "snippet"):
                 code = chat.get_last_code_block()
                 if code:
                     self.copy_to_clipboard(code)
-                    chat.add_agent_message("Supervisor", "📋 ✓ Copied last code block to system clipboard.")
+                    chat.add_agent_message("Supervisor", "📋 ✓ Copied last code block to system clipboard.", record_as_last_response=False)
                     self.notify("Copied code block to clipboard", title="ScopeForge Clipboard")
                 else:
-                    chat.add_agent_message("Supervisor", "ℹ️ No code block found in last agent response.")
+                    chat.add_agent_message("Supervisor", "ℹ️ No code block found in last agent response.", record_as_last_response=False)
+            elif sub in ("export", "file", "save"):
+                target_fname = tokens[2] if len(tokens) > 2 else "scopeforge_session.md"
+                transcript = chat.get_full_transcript()
+                try:
+                    with open(target_fname, "w", encoding="utf-8") as f:
+                        f.write(transcript)
+                    self.copy_to_clipboard(target_fname)
+                    chat.add_agent_message("Supervisor", f"📋 ✓ Exported session transcript to `{target_fname}` and copied path to clipboard.", record_as_last_response=False)
+                    self.notify(f"Exported to {target_fname}", title="ScopeForge Export")
+                except Exception as e:
+                    chat.add_agent_message("Supervisor", f"❌ Export failed: {e}", record_as_last_response=False)
             elif sub in ("findings", "vulns", "vuln"):
                 findings_text = (
                     "### Discovered Security Findings\n"
@@ -252,7 +276,7 @@ class ScopeForgeTUIApp(App):
                     "- `FIND-003` [MEDIUM] Wildcard CORS Header Exposure"
                 )
                 self.copy_to_clipboard(findings_text)
-                chat.add_agent_message("Supervisor", "📋 ✓ Copied security findings to system clipboard.")
+                chat.add_agent_message("Supervisor", "📋 ✓ Copied security findings to system clipboard.", record_as_last_response=False)
                 self.notify("Copied findings to clipboard", title="ScopeForge Clipboard")
             else:
                 chat.add_agent_message(
@@ -261,17 +285,30 @@ class ScopeForgeTUIApp(App):
                     "- `/copy` (or `/copy last`) : Copy last agent response to clipboard\n"
                     "- `/copy all` : Copy full conversation transcript to clipboard\n"
                     "- `/copy code` : Copy last code block to clipboard\n"
+                    "- `/copy export [file]` : Export full session transcript to a file\n"
                     "- `/copy findings` : Copy security findings to clipboard\n\n"
-                    "*Shortcut:* Press **F6** or **Ctrl+Y** anytime to copy the last response."
+                    "*Shortcuts:*\n"
+                    "- Drag mouse to auto-copy highlighted text to clipboard\n"
+                    "- Press **F6** or **Ctrl+Y** to copy last response\n"
+                    "- Press **F7** or `/mouse` to toggle native terminal mouse selection\n"
+                    "- Hold **Option/Fn** while dragging in terminal for native selection",
+                    record_as_last_response=False,
                 )
 
         elif action == "/paste":
             try:
                 pb = self.query_one(PromptBar)
                 pb.paste_clipboard_content()
-                chat.add_agent_message("Supervisor", "📋 ✓ Pasted clipboard content into prompt input.")
+                chat.add_agent_message("Supervisor", "📋 ✓ Pasted clipboard content into prompt input.", record_as_last_response=False)
             except Exception as e:
-                chat.add_agent_message("Supervisor", f"❌ Paste failed: {e}")
+                chat.add_agent_message("Supervisor", f"❌ Paste failed: {e}", record_as_last_response=False)
+
+        elif action == "/mouse":
+            self.action_toggle_mouse_capture()
+
+        elif action == "/export":
+            fname = parts[1].strip() if len(parts) > 1 else "scopeforge_session.md"
+            self.execute_slash_command(f"/copy export {fname}")
 
         elif action == "/model":
             tokens = cmd.strip().split()
@@ -806,8 +843,12 @@ class ScopeForgeTUIApp(App):
                 # Add last response (if not already streamed live)
                 if state.get("messages"):
                     last_msg = state["messages"][-1]
+                    clean_content = str(last_msg.content)
                     if not stream_started:
-                        chat.add_agent_message(active_agent, str(last_msg.content))
+                        chat.add_agent_message(active_agent, clean_content)
+                    else:
+                        chat.last_agent_response = clean_content
+                    self.last_agent_response = clean_content
                     # state["messages"] uses add_messages: history + [human, ai]
                     # Only append the 2 new messages, guard against duplication
                     new_msgs = state["messages"][-2:]
@@ -881,30 +922,77 @@ class ScopeForgeTUIApp(App):
     def action_copy_last_response(self):
         chat = self.query_one(ChatStream)
         text = chat.get_last_agent_response()
+        if not text and hasattr(self, "last_agent_response") and self.last_agent_response:
+            text = self.last_agent_response
         if not text and self.chat_history:
             for msg in reversed(self.chat_history):
                 if isinstance(msg, AIMessage) and msg.content:
                     text = str(msg.content)
                     break
+        if not text and chat.transcript:
+            for item in reversed(chat.transcript):
+                role = item.get("role", "")
+                if "Agent" in role:
+                    c = item.get("content", "")
+                    if c and not c.startswith("📋"):
+                        text = c
+                        break
         if text:
             self.copy_to_clipboard(text)
-            chat.add_agent_message("Supervisor", "📋 ✓ Copied last agent response to system clipboard.")
+            chat.add_agent_message("Supervisor", "📋 ✓ Copied last agent response to system clipboard.", record_as_last_response=False)
             self.notify("Copied last response to clipboard", title="ScopeForge Clipboard")
         else:
-            chat.add_agent_message("Supervisor", "ℹ️ No agent response available to copy yet.")
+            chat.add_agent_message("Supervisor", "ℹ️ No agent response available to copy yet.", record_as_last_response=False)
 
     def action_handle_ctrl_c(self):
-        """Ctrl+C copies active selection if any, otherwise gracefully exits."""
+        """Ctrl+C / Cmd+C copies active selection if any, otherwise gracefully exits."""
         try:
             if self.screen and hasattr(self.screen, "get_selected_text"):
                 selected = self.screen.get_selected_text()
                 if selected:
                     self.copy_to_clipboard(selected)
-                    self.notify("Copied selection to clipboard", title="ScopeForge Clipboard")
+                    self.notify("✓ Copied selection to clipboard", title="ScopeForge Clipboard")
                     return
         except Exception:
             pass
         self.exit()
+
+    def action_toggle_mouse_capture(self):
+        """Toggle mouse tracking on/off so user can do native terminal selection."""
+        driver = getattr(self, "_driver", None)
+        chat = self.query_one(ChatStream)
+        if not hasattr(self, "_native_mouse_mode"):
+            self._native_mouse_mode = False
+
+        self._native_mouse_mode = not self._native_mouse_mode
+        if self._native_mouse_mode:
+            if driver and hasattr(driver, "_disable_mouse_support"):
+                driver._disable_mouse_support()
+            elif driver and hasattr(driver, "write"):
+                driver.write("\x1b[?1000l\x1b[?1003l\x1b[?1015l\x1b[?1006l")
+                if hasattr(driver, "flush"):
+                    driver.flush()
+            chat.add_agent_message(
+                "Supervisor",
+                "🖱 **Terminal Native Selection Mode:** Mouse tracking is DISABLED in terminal.\n"
+                "You can now select text directly with your normal terminal mouse and copy with Cmd+C.\n"
+                "*Press F7 or `/mouse` again to restore TUI interactive clicking.*",
+                record_as_last_response=False,
+            )
+            self.notify("Terminal native selection enabled (Cmd+C to copy)", title="Mouse Mode")
+        else:
+            if driver and hasattr(driver, "_enable_mouse_support"):
+                driver._enable_mouse_support()
+            elif driver and hasattr(driver, "write"):
+                driver.write("\x1b[?1000h\x1b[?1003h\x1b[?1015h\x1b[?1006h")
+                if hasattr(driver, "flush"):
+                    driver.flush()
+            chat.add_agent_message(
+                "Supervisor",
+                "🖱 **TUI Mouse Mode Restored:** Interactive buttons, sidebar clicks, and scrolling re-enabled.",
+                record_as_last_response=False,
+            )
+            self.notify("TUI mouse clicks restored", title="Mouse Mode")
 
     def action_quit_app(self):
         self.exit()

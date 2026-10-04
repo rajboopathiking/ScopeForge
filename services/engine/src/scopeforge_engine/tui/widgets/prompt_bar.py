@@ -33,6 +33,8 @@ SLASH_COMMANDS = [
     ("/compact", "Compact chat history to preserve context"),
     ("/doctor", "Run diagnostic health checks"),
     ("/pr", "Generate pull request summary"),
+    ("/mouse", "Toggle terminal native mouse selection mode (F7)"),
+    ("/export", "Export conversation history to markdown file (/export [file])"),
     ("/clear", "Clear chat history stream"),
     ("/quit", "Exit ScopeForge"),
 ]
@@ -124,7 +126,7 @@ class PromptBar(Widget):
                 id="prompt-input",
             )
         yield Label(
-            "[dim]Commands: /help  /model  /mode  /copy  /agent  /skill  /mcp  /config  /rag  /wiki  /status  /cost  /clear[/]",
+            "[dim]Commands: /help  /model  /mode  /copy  /mouse  /agent  /skill  /mcp  /config  /rag  /export  /clear[/]",
             id="footer-bar",
         )
 

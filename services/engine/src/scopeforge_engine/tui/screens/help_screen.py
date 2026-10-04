@@ -24,7 +24,10 @@ built with **Python Textual**, **LangChain**, **LangGraph**, **LlamaIndex RAG**,
 | `F4` | Open LLM Wiki & User Preferences Viewer |
 | `F5` | Clear conversation history stream |
 | `F6` / `Ctrl+Y` | Copy last agent response to system clipboard |
+| `F7` | Toggle native terminal mouse selection mode (or `/mouse`) |
 | `Ctrl+V` / `Cmd+V` | Paste from OS system clipboard into prompt or modal inputs |
+| `Cmd+C` / `Ctrl+C` | Copy highlighted text selection to OS clipboard |
+| `Option` / `Fn` Drag | Hold key while dragging for native terminal text selection |
 | `Ctrl+Q` | Quit application |
 | `Tab` | Switch input / sidebar focus or auto-complete commands |
 
@@ -32,7 +35,9 @@ built with **Python Textual**, **LangChain**, **LangGraph**, **LlamaIndex RAG**,
 
 ### 🚀 Slash Commands
 
-- `/copy [all|code|findings]`: Copy last agent response, full session, code block, or findings to clipboard
+- `/copy [all|code|export|findings]`: Copy last agent response, full session, code block, or findings to clipboard
+- `/mouse`: Toggle between TUI mouse and native terminal selection mode (F7)
+- `/export [file]`: Export complete session transcript to a Markdown file
 - `/paste`: Paste system clipboard into prompt input
 - `/init`: Initialize `SCOPEFORGE.md` project memory & guidelines in repository root
 - `/diff`: Display git diff of working tree changes in the chat stream

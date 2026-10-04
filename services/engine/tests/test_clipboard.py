@@ -1,5 +1,7 @@
 """Tests for ScopeForge TUI clipboard copy and paste functionality."""
+from pathlib import Path
 import pytest
+from textual import events
 from scopeforge_engine.tui.clipboard import (
     clean_pasted_text,
     copy_to_system_clipboard,
@@ -53,7 +55,7 @@ def test_chat_stream_last_response_and_transcript():
 
 
 @pytest.mark.asyncio
-async def test_tui_slash_copy_and_paste_commands():
+async def test_tui_slash_copy_and_paste_commands(tmp_path: Path):
     app = ScopeForgeTUIApp()
     async with app.run_test() as pilot:
         chat = pilot.app.query_one(ChatStream)
@@ -92,4 +94,34 @@ async def test_tui_slash_copy_and_paste_commands():
         copy_to_system_clipboard("echo 'hello scopeforge'")
         pilot.app.handle_user_input("/paste")
         await pilot.pause()
-        # Verify paste execution completed without crashing
+
+        # 8. Test /mouse toggle (F7)
+        pilot.app.handle_user_input("/mouse")
+        await pilot.pause()
+        assert pilot.app._native_mouse_mode is True
+
+        pilot.app.action_toggle_mouse_capture()
+        await pilot.pause()
+        assert pilot.app._native_mouse_mode is False
+
+        # 9. Test /export to file
+        export_file = tmp_path / "test_export.md"
+        pilot.app.handle_user_input(f"/export {export_file}")
+        await pilot.pause()
+        assert export_file.exists()
+        content = export_file.read_text(encoding="utf-8")
+        assert "ScopeForge Session Transcript" in content
+
+
+@pytest.mark.asyncio
+async def test_mouse_selection_and_keyboard_copy():
+    app = ScopeForgeTUIApp()
+    async with app.run_test() as pilot:
+        # Mock screen selection on active screen
+        pilot.app.screen.get_selected_text = lambda: "Selected text from terminal screen"
+        pilot.app.on_text_selected(events.TextSelected())
+        assert "Selected text from terminal screen" in pilot.app.clipboard
+
+        # Test Ctrl+C / Cmd+C copy selection
+        pilot.app.action_handle_ctrl_c()
+        assert "Selected text from terminal screen" in pilot.app.clipboard
