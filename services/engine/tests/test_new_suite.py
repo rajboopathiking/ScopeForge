@@ -511,6 +511,60 @@ async def test_commercial_tui_slash_commands_and_routing():
         assert any("Active MCP Registered Tools" in msg.get("content", "") for msg in chat.transcript)
 
 
+@pytest.mark.asyncio
+async def test_model_picker_contentswitcher_and_ctrl_shortcuts():
+    from textual.widgets import ContentSwitcher
+    from scopeforge_engine.tui.app import ScopeForgeTUIApp
+    from scopeforge_engine.tui.screens.model_screen import ModelPickerModal
+
+    app = ScopeForgeTUIApp()
+    
+    # 1. Verify Ctrl+[key] bindings
+    binding_keys = [b.key for b in app.BINDINGS]
+    assert "ctrl+h" in binding_keys
+    assert "ctrl+m" in binding_keys
+    assert "ctrl+b" in binding_keys
+    assert "ctrl+w" in binding_keys
+    assert "ctrl+l" in binding_keys
+
+    # 2. Verify ModelPickerModal with ContentSwitcher (no duplicate views/pages)
+    async with app.run_test() as pilot:
+        modal = ModelPickerModal(current_provider="openrouter-free")
+        await app.push_screen(modal)
+        await pilot.pause()
+
+        # Ensure ContentSwitcher exists and defaults to view-list
+        switcher = modal.query_one("#model-view-switcher", ContentSwitcher)
+        assert switcher is not None
+        assert switcher.current == "view-list"
+
+        # Trigger switch to custom
+        modal._switch_to_custom()
+        await pilot.pause()
+        assert switcher.current == "view-custom"
+
+        # Trigger switch back to list
+        modal._switch_to_list()
+        await pilot.pause()
+        assert switcher.current == "view-list"
 
 
+@pytest.mark.asyncio
+async def test_dynamic_recon_and_audit_node_extraction():
+    orchestrator = MultiAgentSecOpsOrchestrator()
 
+    # Dynamic target & port extraction in ReconAgent
+    recon_res = await orchestrator.run("run recon port scan on scanme.org with ports 22,80,443", mode="live")
+    assert recon_res["active_agent"] == "recon"
+    recon_text = recon_res["messages"][-1].content
+    assert "scanme.org" in recon_text
+    assert "22,80,443" in recon_text
+
+    # Dynamic CVE and code block extraction in AuditAgent
+    audit_res = await orchestrator.run(
+        "run audit on CVE-2023-44487 with code:\n```python\nimport os\nos.system(user_cmd)\n```",
+        mode="live",
+    )
+    assert audit_res["active_agent"] == "audit"
+    audit_text = audit_res["messages"][-1].content
+    assert "CVE-2023-44487" in audit_text

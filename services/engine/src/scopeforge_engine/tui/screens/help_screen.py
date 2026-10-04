@@ -14,22 +14,23 @@ built with **Python Textual**, **LangChain**, **LangGraph**, **LlamaIndex RAG**,
 
 ---
 
-### ⌨ Keyboard Shortcuts
+### ⌨ Keyboard Shortcuts (Modern Ctrl+[Key] & F-Keys)
 
-| Shortcut | Description |
-|---|---|
-| `F1` | Show this interactive Help modal |
-| `F2` | Toggle the Right Sidebar (Agents, Scope, Wiki, RAG, MCP) |
-| `F3` | Cycle Execution Mode (`PLAN` ➔ `ARTIFACTS` ➔ `LIVE`) |
-| `F4` | Open LLM Wiki & User Preferences Viewer |
-| `F5` | Clear conversation history stream |
-| `F6` / `Ctrl+Y` | Copy last agent response to system clipboard |
-| `F7` | Toggle native terminal mouse selection mode (or `/mouse`) |
-| `Ctrl+V` / `Cmd+V` | Paste from OS system clipboard into prompt or modal inputs |
-| `Cmd+C` / `Ctrl+C` | Copy highlighted text selection to OS clipboard |
-| `Option` / `Fn` Drag | Hold key while dragging for native terminal text selection |
-| `Ctrl+Q` | Quit application |
-| `Tab` | Switch input / sidebar focus or auto-complete commands |
+| Shortcut | Description | Alternate |
+|---|---|---|
+| `Ctrl+H` | Show this interactive Help modal | `F1` |
+| `Ctrl+B` | Toggle Right Sidebar (Agents, Scope, Wiki, MCP) | `F2` |
+| `Ctrl+M` | Open Model Picker & Custom Model Setup | `/model` |
+| `Ctrl+O` | Cycle Execution Mode (`PLAN` ➔ `ARTIFACTS` ➔ `LIVE`) | `F3` |
+| `Ctrl+W` | Open LLM Wiki & User Preferences Viewer | `F4` |
+| `Ctrl+L` | Clear conversation history stream | `F5` |
+| `Ctrl+Y` | Copy last agent response to system clipboard | `F6` |
+| `Ctrl+T` | Toggle native terminal mouse mode | `F7` / `/mouse` |
+| `Ctrl+V` / `Cmd+V` | Paste from OS system clipboard into prompt | `/paste` |
+| `Cmd+C` / `Ctrl+C` | Copy highlighted text selection to OS clipboard | |
+| `Option` / `Fn` Drag | Hold key while dragging for native terminal selection | |
+| `Ctrl+Q` | Quit ScopeForge application | `/quit` |
+| `Tab` | Switch input / sidebar focus or auto-complete commands | |
 
 ---
 

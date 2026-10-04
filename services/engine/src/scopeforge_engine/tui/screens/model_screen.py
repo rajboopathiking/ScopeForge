@@ -5,7 +5,7 @@ from typing import List, Optional, Tuple
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, OptionList, Select
+from textual.widgets import Button, ContentSwitcher, Input, Label, OptionList, Select
 from textual.widgets.option_list import Option
 
 from ...llm_providers.manager import ProviderManager
@@ -28,72 +28,84 @@ MODEL_PRESETS = [
 class ModelPickerModal(ModalScreen[str]):
     """Claude Code / Open Code style fast model switcher and in-terminal configuration modal."""
 
-    def __init__(self, provider_mgr: ProviderManager, show_custom: bool = False, **kwargs):
+    def __init__(
+        self,
+        provider_mgr: Optional[ProviderManager] = None,
+        show_custom: bool = False,
+        current_provider: Optional[str] = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
-        self.provider_mgr = provider_mgr
+        self.provider_mgr = provider_mgr or ProviderManager()
         self.show_custom_form = show_custom
+        self.current_provider = current_provider or getattr(self.provider_mgr, "active_provider_name", "")
         self.option_targets: List[str] = []
         self._filter_text: str = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="model-picker-dialog"):
-            yield Label("⚡ Select or Configure Model", id="modal-title")
+            yield Label("⚡ ScopeForge Model Engine & Custom Setup", id="modal-title")
 
-            # LIST VIEW (Default fast model switcher)
-            with Vertical(id="view-list", classes="" if not self.show_custom_form else "-hidden"):
-                yield ClipboardInput(placeholder="Type to filter models... (Claude Code style)", id="inp-model-filter")
-                yield Label("Navigate with ↑/↓ + Enter, or press 1-9 to select directly:", classes="modal-hint", id="model-hint")
-                yield OptionList(id="model-option-list")
-                with Horizontal(id="modal-buttons-select"):
-                    yield Button("Select (Enter)", variant="primary", id="btn-select", classes="modal-btn")
-                    yield Button("Add Custom (+)", variant="success", id="btn-go-custom", classes="modal-btn")
-                    yield Button("Cancel (Esc)", variant="default", id="btn-cancel", classes="modal-btn")
+            with ContentSwitcher(initial="view-custom" if self.show_custom_form else "view-list", id="model-view-switcher"):
+                # LIST VIEW (Default fast model switcher)
+                with Vertical(id="view-list", classes="" if not self.show_custom_form else "-hidden"):
+                    yield ClipboardInput(placeholder="🔍 Type to filter models (OpenRouter, DeepSeek, Groq, Claude, Ollama)...", id="inp-model-filter")
+                    yield Label("Navigate with ↑/↓ + Enter, or press 1-9 to select directly:", classes="modal-hint", id="model-hint")
+                    yield OptionList(id="model-option-list")
+                    with Horizontal(id="modal-buttons-select"):
+                        yield Button("Select (Enter)", variant="primary", id="btn-select", classes="modal-btn")
+                        yield Button("Add Custom (+)", variant="success", id="btn-go-custom", classes="modal-btn")
+                        yield Button("Cancel (Esc)", variant="default", id="btn-cancel", classes="modal-btn")
 
-            # CUSTOM CONFIG VIEW — api_key, base_url, model_name are essential
-            with Vertical(id="view-custom", classes="-hidden" if not self.show_custom_form else ""):
-                yield Label("⚙️ Add Custom Model — api_key, base_url, model_name are required (*):", classes="form-section-title")
+                # CUSTOM CONFIG VIEW — api_key, base_url, model_name are essential
+                with Vertical(id="view-custom", classes="-hidden" if not self.show_custom_form else ""):
+                    yield Label("⚙️ Add Custom Model — OpenRouter, DeepSeek, Together, vLLM, Ollama, Claude Proxy", classes="form-section-title")
 
-                yield Label("Alias / Name (optional, auto-generated if blank):", classes="form-label")
-                yield ClipboardInput(placeholder="e.g. my-custom-model, deepseek-v3", id="inp-cfg-name")
+                    with Horizontal(classes="form-row"):
+                        with Vertical(classes="half-col"):
+                            yield Label("Alias / Name (optional):", classes="form-label")
+                            yield ClipboardInput(placeholder="e.g. deepseek-v3, custom-claude", id="inp-cfg-name")
+                        with Vertical(classes="half-col"):
+                            yield Label("Provider Platform *:", classes="form-label")
+                            yield Select(
+                                [
+                                    ("Auto-detect from model/base_url", "auto"),
+                                    ("OpenAI-compatible", "openai"),
+                                    ("Anthropic", "anthropic"),
+                                    ("OpenRouter", "openrouter"),
+                                    ("Groq", "groq"),
+                                    ("Gemini (native)", "gemini"),
+                                    ("Ollama (local, no key needed)", "ollama"),
+                                    ("Custom / vLLM / LM Studio", "custom"),
+                                ],
+                                value="auto",
+                                id="inp-cfg-provider",
+                            )
 
-                yield Label("Provider Platform *:", classes="form-label")
-                yield Select(
-                    [
-                        ("Auto-detect from model/base_url", "auto"),
-                        ("OpenAI-compatible", "openai"),
-                        ("Anthropic", "anthropic"),
-                        ("OpenRouter", "openrouter"),
-                        ("Groq", "groq"),
-                        ("Gemini (native)", "gemini"),
-                        ("Ollama (local, no key needed)", "ollama"),
-                        ("Custom / vLLM / LM Studio", "custom"),
-                    ],
-                    value="auto",
-                    id="inp-cfg-provider",
-                )
+                    yield Label("Model Name / ID * (required):", classes="form-label")
+                    yield ClipboardInput(placeholder="e.g. deepseek/deepseek-chat, gpt-4o, claude-3-5-sonnet, meta-llama/llama-3.3-70b-instruct", id="inp-cfg-model")
 
-                yield Label("Model Name / ID *:", classes="form-label")
-                yield ClipboardInput(placeholder="e.g. deepseek/deepseek-chat, gpt-4o, meta-llama/llama-3.3-70b-instruct (required)", id="inp-cfg-model")
+                    yield Label("API Key * (required except Ollama/local — or use env:VAR):", classes="form-label")
+                    yield ClipboardInput(placeholder="sk-... / gsk-... / sk-or-v1-... (auto-sanitized, paste directly)", password=True, id="inp-cfg-key")
 
-                yield Label("API Key * (required except Ollama/local — or use env:VAR):", classes="form-label")
-                yield ClipboardInput(placeholder="sk-... / gsk-... / sk-or-v1-... (required)", password=True, id="inp-cfg-key")
+                    yield Label("API Base URL *:", classes="form-label")
+                    yield ClipboardInput(placeholder="e.g. https://api.deepseek.com/v1, https://openrouter.ai/api/v1, http://localhost:11434/v1", id="inp-cfg-base")
 
-                yield Label("API Base URL *:", classes="form-label")
-                yield ClipboardInput(placeholder="e.g. https://api.deepseek.com/v1, https://openrouter.ai/api/v1, http://localhost:11434/v1 (required)", id="inp-cfg-base")
+                    with Horizontal(classes="form-row"):
+                        with Vertical(classes="half-col"):
+                            yield Label("Sampling Temperature (0.0 - 2.0):", classes="form-label")
+                            yield ClipboardInput(value="0.2", placeholder="0.2", id="inp-cfg-temp")
+                        with Vertical(classes="half-col"):
+                            yield Label("Max Tokens:", classes="form-label")
+                            yield ClipboardInput(value="4096", placeholder="4096", id="inp-cfg-max")
 
-                yield Label("Sampling Temperature (optional, default 0.2):", classes="form-label")
-                yield ClipboardInput(value="0.2", placeholder="0.2", id="inp-cfg-temp")
+                    yield Label("", id="cfg-status-msg")
 
-                yield Label("Max Tokens (optional, default 4096):", classes="form-label")
-                yield ClipboardInput(value="4096", placeholder="4096", id="inp-cfg-max")
-
-                yield Label("", id="cfg-status-msg")
-
-                with Horizontal(id="modal-buttons-config"):
-                    yield Button("Save & Select", variant="primary", id="btn-save-activate", classes="modal-btn")
-                    yield Button("Test", variant="success", id="btn-test-custom", classes="modal-btn")
-                    yield Button("Back", variant="default", id="btn-back-to-list", classes="modal-btn")
-                    yield Button("Cancel", variant="default", id="btn-cancel-custom", classes="modal-btn")
+                    with Horizontal(id="modal-buttons-config"):
+                        yield Button("Save & Select", variant="primary", id="btn-save-activate", classes="modal-btn")
+                        yield Button("Test", variant="success", id="btn-test-custom", classes="modal-btn")
+                        yield Button("Back", variant="default", id="btn-back-to-list", classes="modal-btn")
+                        yield Button("Cancel", variant="default", id="btn-cancel-custom", classes="modal-btn")
 
     def on_mount(self):
         self._populate_options(self._filter_text)
@@ -218,10 +230,15 @@ class ModelPickerModal(ModalScreen[str]):
                 target = "action-custom"
         self._activate_target(target)
 
-    def _switch_to_custom(self, to_custom: bool):
+    def _switch_to_custom(self, to_custom: bool = True):
         self.show_custom_form = to_custom
         view_list = self.query_one("#view-list", Vertical)
         view_custom = self.query_one("#view-custom", Vertical)
+        try:
+            switcher = self.query_one("#model-view-switcher", ContentSwitcher)
+            switcher.current = "view-custom" if to_custom else "view-list"
+        except Exception:
+            pass
         if to_custom:
             view_list.add_class("-hidden")
             view_custom.remove_class("-hidden")
@@ -237,6 +254,9 @@ class ModelPickerModal(ModalScreen[str]):
                 self.query_one("#model-option-list", OptionList).focus()
             except Exception:
                 pass
+
+    def _switch_to_list(self):
+        self._switch_to_custom(False)
 
     def on_input_changed(self, event: Input.Changed):
         # Claude Code style live filter — only for the picker search box.

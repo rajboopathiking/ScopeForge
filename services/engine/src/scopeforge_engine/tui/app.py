@@ -38,17 +38,25 @@ class ScopeForgeTUIApp(App):
     SUB_TITLE = "Claude Code / Open Code style TUI"
 
     BINDINGS = [
-        Binding("f1", "show_help", "Help", show=True),
-        Binding("f2", "toggle_sidebar", "Sidebar", show=True),
-        Binding("f3", "cycle_mode", "Cycle Mode", show=True),
-        Binding("f4", "open_wiki", "Wiki Memory", show=True),
-        Binding("f5", "clear_chat", "Clear", show=True),
-        Binding("f6", "copy_last_response", "Copy Last", show=True),
-        Binding("f7", "toggle_mouse_capture", "Mouse Mode", show=True),
-        Binding("ctrl+y", "copy_last_response", "Copy Last", show=False),
+        Binding("ctrl+h", "show_help", "Help (^H)", show=True),
+        Binding("ctrl+b", "toggle_sidebar", "Sidebar (^B)", show=True),
+        Binding("ctrl+m", "pick_model", "Model (^M)", show=True),
+        Binding("ctrl+w", "open_wiki", "Wiki (^W)", show=True),
+        Binding("ctrl+l", "clear_chat", "Clear (^L)", show=True),
+        Binding("ctrl+y", "copy_last_response", "Copy (^Y)", show=True),
+        Binding("ctrl+t", "toggle_mouse_capture", "Mouse (^T)", show=True),
+        Binding("ctrl+o", "cycle_mode", "Mode (^O)", show=True),
+        Binding("ctrl+q", "quit_app", "Quit (^Q)", show=True),
+        # F-keys preserved as secondary compatibility bindings
+        Binding("f1", "show_help", "Help", show=False),
+        Binding("f2", "toggle_sidebar", "Sidebar", show=False),
+        Binding("f3", "cycle_mode", "Cycle Mode", show=False),
+        Binding("f4", "open_wiki", "Wiki Memory", show=False),
+        Binding("f5", "clear_chat", "Clear", show=False),
+        Binding("f6", "copy_last_response", "Copy Last", show=False),
+        Binding("f7", "toggle_mouse_capture", "Mouse Mode", show=False),
         Binding("super+c", "handle_ctrl_c", "Copy Selection", show=False),
         Binding("ctrl+c", "handle_ctrl_c", "Quit / Copy", show=False),
-        Binding("ctrl+q", "quit_app", "Quit", show=True),
     ]
 
     def __init__(self, **kwargs):

@@ -81,7 +81,7 @@ ModalScreen {
 }
 
 #model-picker-dialog {
-    width: 80;
+    width: 84;
     height: auto;
     max-height: 42;
     background: #161b22;
@@ -91,17 +91,29 @@ ModalScreen {
     overflow-y: auto;
 }
 
+#model-view-switcher {
+    height: auto;
+    max-height: 38;
+}
+
+#view-list {
+    height: auto;
+    max-height: 36;
+}
+
 #view-custom {
     height: auto;
-    max-height: 32;
+    max-height: 36;
     overflow-y: auto;
     padding-right: 1;
 }
 
 /* View toggle for ModelPickerModal: only one of list/custom is visible. */
-/* Without this, both views render stacked, so `/model` looks like */
-/* "custom addition only" with the selection list pushed out of view. */
 #view-list.-hidden, #view-custom.-hidden {
+    display: none;
+}
+
+.-hidden {
     display: none;
 }
 

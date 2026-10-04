@@ -4,7 +4,7 @@ from __future__ import annotations
 import contextvars
 import json
 from typing import Any, Callable, Dict, List, Literal, Optional
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 
 _stream_callback_var: contextvars.ContextVar[Optional[Callable[[str, str], None]]] = contextvars.ContextVar(
@@ -153,7 +153,7 @@ class MultiAgentSecOpsOrchestrator:
                         # Still avoid conceptual "explain ports in docker" style
                         if not (is_conceptual and not has_target_hint):
                             target_agent = "recon"
-                    elif _has(r"\b(sast|static\s+analysis|cve-\d|vuln\s*(scan|audit|assess)|sqli|xss|cwe-\d+)\b") and _has(
+                    elif _has(r"\b(sast|static\s+analysis|cve-\d+|vuln\s*(scan|audit|assess)|sqli|xss|cwe-\d+)\b") and _has(
                         r"\b(audit|scan|review|check|triage|correlat|cve|sast|sqli|xss)\b"
                     ):
                         # Require security-operational context, not generic "review my code"
@@ -197,6 +197,12 @@ class MultiAgentSecOpsOrchestrator:
 
             # Direct supervisor response (Claude Code / Open Code general chat)
             chat_model = self.provider_mgr.get_chat_model()
+            active_cfg = self.provider_mgr.get_active_config()
+            is_mock = (
+                getattr(chat_model, "is_mock", False)
+                or active_cfg.provider == ProviderType.MOCK
+                or "mock" in str(getattr(chat_model, "model_name", "")).lower()
+            )
             skills_info = self.skill_mgr.get_prompt_instructions(str(last_message))
             sys_prompt = (
                 "You are the ScopeForge Supervisor — a Claude Code / Open Code style "
@@ -211,6 +217,18 @@ class MultiAgentSecOpsOrchestrator:
             )
             prompt_msgs = [SystemMessage(content=sys_prompt)] + list(state["messages"][-5:])
             prompt_msgs = self.pipeline.run_before_llm(prompt_msgs, {"agent": "Supervisor"})
+
+            all_tools = list(ALL_SUITE_TOOLS) + list(self.mcp.get_langchain_tools())
+            tool_map = {getattr(t, "name", str(t)): t for t in all_tools}
+
+            # Autonomous tool binding for real LLMs (Claude / DeepSeek / OpenAI / OpenRouter)
+            model_to_call = chat_model
+            if not is_mock and hasattr(chat_model, "bind_tools"):
+                try:
+                    model_to_call = chat_model.bind_tools(all_tools)
+                except Exception:
+                    model_to_call = chat_model
+
             def _extract_chunk_text(chunk_content: Any) -> str:
                 if not chunk_content:
                     return ""
@@ -228,23 +246,58 @@ class MultiAgentSecOpsOrchestrator:
 
             cb = _stream_callback_var.get()
             try:
-                full_chunks = []
-                async for chunk in chat_model.astream(prompt_msgs):
-                    full_chunks.append(chunk)
-                    txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                    if txt and cb:
-                        cb("supervisor", txt)
+                current_msgs = list(prompt_msgs)
+                max_iterations = 4
+                iteration = 0
+                response = AIMessage(content="")
 
-                if full_chunks:
-                    response = full_chunks[0]
-                    for c in full_chunks[1:]:
-                        response = response + c
-                else:
-                    response = AIMessage(content="")
+                while iteration < max_iterations:
+                    full_chunks = []
+                    async for chunk in model_to_call.astream(current_msgs):
+                        full_chunks.append(chunk)
+                        txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                        if txt and cb:
+                            cb("supervisor", txt)
 
-                extracted_content = _extract_chunk_text(getattr(response, "content", ""))
-                if extracted_content:
-                    response.content = extracted_content
+                    if full_chunks:
+                        iter_resp = full_chunks[0]
+                        for c in full_chunks[1:]:
+                            iter_resp = iter_resp + c
+                    else:
+                        iter_resp = AIMessage(content="")
+
+                    extracted_content = _extract_chunk_text(getattr(iter_resp, "content", ""))
+                    if extracted_content:
+                        iter_resp.content = extracted_content
+
+                    tool_calls = getattr(iter_resp, "tool_calls", None) or []
+                    if not tool_calls:
+                        response = iter_resp
+                        break
+
+                    iteration += 1
+                    current_msgs.append(iter_resp)
+
+                    for tc in tool_calls:
+                        tc_name = tc.get("name", "")
+                        tc_args = tc.get("args", {})
+                        tc_id = tc.get("id") or f"call_{tc_name}_{iteration}"
+
+                        if cb:
+                            cb("supervisor", f"\n🛠️ *Invoking tool `{tc_name}`*...\n")
+
+                        if tc_name in tool_map:
+                            t_out = self._invoke_tool_safely(tool_map[tc_name], tc_args, "Supervisor")
+                        else:
+                            t_out = f"Tool '{tc_name}' is not registered."
+
+                        if cb:
+                            preview = (str(t_out)[:160] + "...") if len(str(t_out)) > 160 else str(t_out)
+                            cb("supervisor", f"```text\n{preview}\n```\n")
+
+                        current_msgs.append(ToolMessage(content=str(t_out), tool_call_id=tc_id, name=tc_name))
+
+                    response = iter_resp
 
                 # Claude Code resilience: reasoning models (deepseek-r1, etc.)
                 # sometimes return empty `content` with reasoning in a separate
@@ -283,7 +336,6 @@ class MultiAgentSecOpsOrchestrator:
                     if reason_text:
                         response = AIMessage(content=reason_text[:4000])
                     else:
-                        active_cfg = self.provider_mgr.get_active_config()
                         response = AIMessage(
                             content=(
                                 f"⚠️ **Empty reply from `{active_cfg.model}`** (transient reasoning-model blank — Claude Code retries instead of failing).\n\n"
@@ -296,7 +348,6 @@ class MultiAgentSecOpsOrchestrator:
                         )
             except Exception as e:
                 err = str(e)
-                active_cfg = self.provider_mgr.get_active_config()
                 # Automatic Resilience: If a model fails with 429 rate limit or 404/402,
                 # auto-fallback to the resilient openrouter/free meta-router.
                 fallback_success = False
@@ -371,14 +422,24 @@ class MultiAgentSecOpsOrchestrator:
 
         async def recon_node(state: AgentState) -> Dict[str, Any]:
             last_message = str(state["messages"][-1].content)
+            
+            # Dynamic target extraction: check query for IP or hostname
             target = "authorized.example"
-            for t in state.get("scope", []):
-                if "example" in t or "localhost" in t:
-                    target = t
-                    break
+            import re
+            m_target = re.search(r"\b(?:https?://)?([a-zA-Z0-9][-a-zA-Z0-9.]*\.[a-zA-Z]{2,}|localhost|127\.0\.0\.1)(?::\d+)?\b", last_message)
+            if m_target and "example.com" not in m_target.group(1).lower():
+                target = m_target.group(1)
+            else:
+                for t in state.get("scope", []):
+                    if "example" in t or "localhost" in t:
+                        target = t
+                        break
+
+            m_ports = re.search(r"\bports?\s*[:=]?\s*([0-9][0-9,\s-]*)", last_message, re.IGNORECASE)
+            ports = m_ports.group(1).replace(" ", "") if m_ports else "80,443,8080"
 
             # Execute recon tools with middleware protection
-            scan_out = self._invoke_tool_safely(recon_port_scan, {"target": target, "ports": "80,443,8080"}, "ReconAgent")
+            scan_out = self._invoke_tool_safely(recon_port_scan, {"target": target, "ports": ports}, "ReconAgent")
             probe_out = self._invoke_tool_safely(web_surface_probe, {"url": f"https://{target}"}, "ReconAgent")
 
             # Emit A2A result back
@@ -391,7 +452,7 @@ class MultiAgentSecOpsOrchestrator:
 
             response_text = (
                 f"### [ReconAgent] Perimeter Assessment for `{target}`\n\n"
-                f"**Port Discovery Telemetry:**\n```json\n{scan_out}\n```\n\n"
+                f"**Port Discovery Telemetry (Ports: {ports}):**\n```json\n{scan_out}\n```\n\n"
                 f"**Web Surface Probe:**\n```json\n{probe_out}\n```\n\n"
                 f"-> Delegated surface data to **AuditAgent** via A2A Protocol for vulnerability correlation."
             )
@@ -407,20 +468,27 @@ class MultiAgentSecOpsOrchestrator:
             last_message = str(state["messages"][-1].content)
             sample_code = "query = f'SELECT * FROM users WHERE user_id = {user_input}'\ncursor.execute(query)"
 
+            import re
+            m_code = re.search(r"```(?:[a-zA-Z0-9_-]+)?\s*\n(.*?)\n```", last_message, re.DOTALL)
+            m_cve = re.search(r"(CVE-\d{4}-\d{4,7})", last_message, re.IGNORECASE)
+            cve_query = m_cve.group(1).upper() if m_cve else "CVE-2024-3400"
+
+            code_to_audit = m_code.group(1) if m_code else sample_code
+
             # Execute SAST and CVE tools with middleware
-            sast_out = self._invoke_tool_safely(sast_code_audit, {"code_snippet_or_file": sample_code}, "AuditAgent")
-            cve_out = self._invoke_tool_safely(cve_advisory_search, {"query": "CVE-2024-3400"}, "AuditAgent")
+            sast_out = self._invoke_tool_safely(sast_code_audit, {"code_snippet_or_file": code_to_audit}, "AuditAgent")
+            cve_out = self._invoke_tool_safely(cve_advisory_search, {"query": cve_query}, "AuditAgent")
 
             a2a_msg = self.a2a_bus.send(
                 sender="AuditAgent",
                 recipient="ExploitAgent",
                 intent=A2AIntent.EVIDENCE_SHARING,
-                payload={"cwe": "CWE-89", "severity": "CRITICAL", "confidence": 0.95},
+                payload={"cwe": "CWE-89", "severity": "CRITICAL", "confidence": 0.95, "cve": cve_query},
             )
 
             finding = {
                 "id": "FIND-001",
-                "title": "SQL Injection in User Authentication Query",
+                "title": f"Security Finding in Analyzed Target ({cve_query})",
                 "severity": "CRITICAL",
                 "cwe": "CWE-89",
                 "cvss": 9.8,
@@ -429,7 +497,7 @@ class MultiAgentSecOpsOrchestrator:
             response_text = (
                 "### [AuditAgent] Vulnerability Analysis & SAST Audit\n\n"
                 f"**Static Code Analysis:**\n```json\n{sast_out}\n```\n\n"
-                f"**CVE Correlation Database:**\n```json\n{cve_out}\n```\n\n"
+                f"**CVE Correlation Database (`{cve_query}`):**\n```json\n{cve_out}\n```\n\n"
                 "-> Shared verified finding with **ExploitAgent** via A2A protocol."
             )
 
