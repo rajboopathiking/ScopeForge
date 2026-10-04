@@ -55,8 +55,6 @@ pip install scopeforge
 uvx scopeforge
 
 # Launch the interactive Claude Code style TUI:
-scopeforge
-# Or shorthand:
 sf
 ```
 
