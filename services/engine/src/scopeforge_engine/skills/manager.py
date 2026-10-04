@@ -87,14 +87,18 @@ class SkillManager:
                 skill_file.write_text(skill.to_markdown(), encoding="utf-8")
 
     def _load_all(self):
-        """Scan skills directories (.scopeforge/skills and root skills/) and load all valid SKILL.md files."""
+        """Scan skills directories (.scopeforge/skills, root skills/, and ~/.scopeforge/skills) and load all valid SKILL.md files."""
         self.skills.clear()
-        search_dirs = [self.skills_dir, Path("skills")]
+        search_dirs = [
+            self.skills_dir,
+            Path("skills"),
+            Path.home() / ".scopeforge" / "skills",
+        ]
         for s_dir in search_dirs:
             if s_dir.exists():
                 for p in s_dir.glob("*/SKILL.md"):
                     skill = Skill.from_skill_file(p)
-                    if skill:
+                    if skill and skill.name not in self.skills:
                         self.skills[skill.name] = skill
 
     def list_skills(self) -> List[Skill]:
@@ -119,15 +123,80 @@ class SkillManager:
         return False
 
     def auto_match_skills(self, query: str) -> List[Skill]:
-        """Automatically match skills against user query terms."""
-        matched = []
+        """Automatically match skills against user query terms, ranked by relevance."""
         q_lower = query.lower()
+        scored: List[tuple[int, Skill]] = []
         for s in self.skills.values():
-            if any(t.lower() in q_lower for t in s.triggers):
-                matched.append(s)
-            elif s.name in self.active_skills:
-                matched.append(s)
-        return matched
+            score = 0
+            if s.name.lower() in q_lower:
+                score += 10
+            for t in s.triggers:
+                t_low = t.lower()
+                if t_low in q_lower:
+                    score += 3 if len(t_low) > 3 else 1
+            if s.name in self.active_skills:
+                score += 5
+            if score > 0:
+                scored.append((score, s))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [s for _, s in scored[:3]]
+
+    def install_skill_from_repo(self, repo_url: str) -> tuple[bool, str, List[str]]:
+        """Clone a git repository and install all skills found within it into ScopeForge."""
+        import shutil
+        import subprocess
+        import tempfile
+
+        repo_url = repo_url.strip()
+        if not repo_url:
+            return False, "Repository URL cannot be empty.", []
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="scopeforge_skill_"))
+        try:
+            res = subprocess.run(
+                ["git", "clone", "--depth", "1", repo_url, str(temp_dir)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if res.returncode != 0:
+                return False, f"git clone failed: {res.stderr.strip() or res.stdout.strip()}", []
+
+            installed: List[str] = []
+            candidates: List[Path] = []
+            if (temp_dir / "skills").exists() and (temp_dir / "skills").is_dir():
+                candidates.extend((temp_dir / "skills").glob("*"))
+            else:
+                candidates.extend(temp_dir.glob("*"))
+
+            target_dirs = [self.skills_dir, Path.home() / ".scopeforge" / "skills"]
+            for cand in candidates:
+                if cand.is_dir() and (cand / "SKILL.md").exists():
+                    s_name = cand.name
+                    for t_dir in target_dirs:
+                        t_dir.mkdir(parents=True, exist_ok=True)
+                        dest = t_dir / s_name
+                        if dest.exists():
+                            shutil.rmtree(dest)
+                        shutil.copytree(cand, dest)
+                    installed.append(s_name)
+
+            if not installed and (temp_dir / "SKILL.md").exists():
+                s_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+                for t_dir in target_dirs:
+                    dest = t_dir / s_name
+                    dest.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(temp_dir / "SKILL.md", dest / "SKILL.md")
+                installed.append(s_name)
+
+            self._load_all()
+            if installed:
+                return True, f"Successfully installed {len(installed)} skills: {', '.join(installed)}", installed
+            return False, "No valid SKILL.md skills found in the repository.", []
+        except Exception as e:
+            return False, f"Failed to install skill: {e}", []
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def get_prompt_instructions(self, query: str = "") -> str:
         """Generate formatted skill instructions to augment the LLM system prompt."""

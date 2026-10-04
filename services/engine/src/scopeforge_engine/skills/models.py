@@ -28,28 +28,57 @@ class Skill(BaseModel):
             return None
 
         content = file_path.read_text(encoding="utf-8")
+        name = file_path.parent.name
+        description = ""
+        triggers = []
+        author = "ScopeForge"
+        version = "1.0.0"
+        instructions = content.strip()
+
         frontmatter_match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", content, re.DOTALL)
         if frontmatter_match:
             raw_yaml, body = frontmatter_match.groups()
+            instructions = body.strip()
             try:
                 meta = yaml.safe_load(raw_yaml) or {}
-                return cls(
-                    name=meta.get("name", file_path.parent.name),
-                    description=meta.get("description", ""),
-                    triggers=meta.get("triggers", []),
-                    author=meta.get("author", "ScopeForge"),
-                    version=str(meta.get("version", "1.0.0")),
-                    instructions=body.strip(),
-                    path=str(file_path),
-                )
+                name = meta.get("name", file_path.parent.name)
+                description = str(meta.get("description", "") or "").strip()
+                raw_triggers = meta.get("triggers", [])
+                if isinstance(raw_triggers, str):
+                    triggers = [t.strip() for t in raw_triggers.split(",") if t.strip()]
+                elif isinstance(raw_triggers, list):
+                    triggers = [str(t).strip() for t in raw_triggers if t]
+                author = meta.get("author", "ScopeForge")
+                version = str(meta.get("version", "1.0.0"))
             except Exception:
                 pass
+        else:
+            description = content.splitlines()[0][:100] if content else ""
 
-        # Fallback if no frontmatter
+        # Auto-infer triggers if not explicitly defined in frontmatter (e.g. Claude Code skills)
+        if not triggers:
+            derived = set()
+            clean_name = name.lower()
+            derived.add(clean_name)
+            for part in clean_name.replace("_", "-").split("-"):
+                if len(part) >= 2:
+                    derived.add(part)
+            if clean_name.startswith("li-"):
+                derived.add("linkedin")
+            # Extract common action/topic keywords from description
+            desc_lower = description.lower()
+            for kw in ("linkedin", "post", "hook", "carousel", "profile", "comment", "inbox", "dm", "message", "reply", "plan", "audit", "repurpose", "human"):
+                if kw in desc_lower:
+                    derived.add(kw)
+            triggers = sorted(list(derived))
+
         return cls(
-            name=file_path.parent.name,
-            description=content.splitlines()[0][:100] if content else "",
-            instructions=content.strip(),
+            name=name,
+            description=description,
+            triggers=triggers,
+            author=author,
+            version=version,
+            instructions=instructions,
             path=str(file_path),
         )
 

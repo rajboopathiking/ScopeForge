@@ -422,7 +422,18 @@ class ScopeForgeTUIApp(App):
             self.action_open_wiki()
 
         elif action in ("/skill", "/skills"):
-            if len(parts) > 1 and parts[1].lower() != "list":
+            if len(parts) > 1 and parts[1].lower() in ("install", "clone", "add"):
+                if len(parts) > 2:
+                    repo_url = parts[2].strip()
+                    chat.add_agent_message("Supervisor", f"📦 Installing skill from `{repo_url}`...")
+                    ok, msg, installed = self.skill_mgr.install_skill_from_repo(repo_url)
+                    if ok:
+                        chat.add_agent_message("Supervisor", f"✓ {msg}\n\nType `/skill list` to see all skills or `/skill <name>` to toggle.")
+                    else:
+                        chat.add_agent_message("Supervisor", f"❌ Skill installation failed: {msg}")
+                else:
+                    chat.add_agent_message("Supervisor", "Usage: `/skill install <git-url>` (e.g. `/skill install https://github.com/Jakeschincariol/linkedin-agent-skill.git`)")
+            elif len(parts) > 1 and parts[1].lower() != "list":
                 skill_name = parts[1].lower()
                 if self.skill_mgr.get_skill(skill_name):
                     if skill_name in self.skill_mgr.active_skills:
@@ -438,7 +449,7 @@ class ScopeForgeTUIApp(App):
                     f"- **[{s.name}]**: {s.description}\n  *Triggers:* `{', '.join(s.triggers)}` | *Status:* {'[ACTIVE]' if s.name in self.skill_mgr.active_skills else '[AVAILABLE]'}"
                     for s in self.skill_mgr.list_skills()
                 )
-                chat.add_agent_message("Supervisor", f"🧠 **Discovered Agent Skills (`.scopeforge/skills/`):**\n\n{skills_list}\n\n*Type `/skill <name>` to toggle activation.*")
+                chat.add_agent_message("Supervisor", f"🧠 **Discovered Agent Skills (`.scopeforge/skills/`):**\n\n{skills_list}\n\n*Type `/skill <name>` to toggle activation or `/skill install <git-url>` to install new skills.*")
 
         elif action == "/mcp":
             if len(parts) > 2 and parts[1].lower() == "add":

@@ -233,6 +233,12 @@ def test_skills_manager():
     instructions = mgr.get_prompt_instructions("idor on api")
     assert "BOLA" in instructions or "IDOR" in instructions
 
+    # Test auto matching for linkedin skills
+    li_matches = mgr.auto_match_skills("write a linkedin post about AI")
+    if any(s.name == "li-post" for s in skills):
+        assert len(li_matches) > 0
+        assert li_matches[0].name == "li-post"
+
 
 def test_mcp_customization(tmp_path):
     from scopeforge_engine.mcp_bridge import MCPBridge

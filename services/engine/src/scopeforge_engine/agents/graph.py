@@ -164,7 +164,7 @@ class MultiAgentSecOpsOrchestrator:
                         r"\b(report|cvss|remediation|findings|assessment)\b"
                     ):
                         target_agent = "report"
-                    elif _has(r"(git\s+(status|diff)|view\s+file|read\s+file|edit\s+file|write\s+file|\bglob\b|\bgrep\b|search\s+code|find\s+file)"):
+                    elif _has(r"(git\s+(status|diff|commit|clone)|view\s+file|read\s+file|edit\s+file|write\s+file|\bglob\b|\bgrep\b|search\s+code|find\s+file)") or _has(r"\b(install\s+skill|install|clone|terminal|bash|shell|exec|run\s+command|run\s+in\s+terminal|mkdir|cp\s+-r)\b"):
                         target_agent = "dev"
 
             if target_agent != "supervisor":
@@ -188,11 +188,12 @@ class MultiAgentSecOpsOrchestrator:
             skills_info = self.skill_mgr.get_prompt_instructions(str(last_message))
             sys_prompt = (
                 "You are the ScopeForge Supervisor — a Claude Code / Open Code style "
-                "general coding assistant, system architect, and security coordinator.\n"
-                "Answer general programming, architecture, and knowledge questions directly "
-                "and concisely with code blocks where useful. "
-                "Only delegate to security specialists when the user explicitly requests "
-                "a scan, audit, exploit verification, or report. "
+                "autonomous agent harness, coding assistant, and system coordinator.\n"
+                "You HAVE autonomous tool execution capabilities through your integrated DevAgent and Security agents. "
+                "NEVER say 'I don't have the ability to execute code or run commands on your system' or 'You need to run those commands yourself in your terminal'. "
+                "If the user asks to run terminal commands, clone repositories, install skills or dependencies, "
+                "or inspect files, ScopeForge automates and executes them directly. "
+                "Answer programming, architecture, and knowledge questions directly with code blocks. "
                 "Be concise, use markdown, show diffs/edits explicitly.\n"
                 f"{proj_rules}\n{user_prefs}\n{rag_info}\n{skills_info}"
             )
@@ -507,7 +508,29 @@ class MultiAgentSecOpsOrchestrator:
             last_lower = last_message.lower()
 
             output = ""
-            if "status" in last_lower or ("git" in last_lower and "diff" not in last_lower):
+            # 1. Skill installation from repository
+            if ("skill" in last_lower or "install" in last_lower or "clone" in last_lower) and ("github.com" in last_lower or "http://" in last_lower or "https://" in last_lower):
+                import re
+                m_url = re.search(r"https?://[^\s'\"`]+", last_message)
+                if m_url:
+                    url = m_url.group(0).rstrip(".,;)")
+                    ok, msg, installed = self.skill_mgr.install_skill_from_repo(url)
+                    if ok:
+                        output = f"**Skill Installation Succeeded:**\n- {msg}\n- Skills are now loaded and ready in `.scopeforge/skills/` and `~/.scopeforge/skills/`."
+                    else:
+                        output = f"**Skill Installation Failed:**\n{msg}"
+                else:
+                    output = "**Skill Installation:** Please provide a valid git repository URL to install."
+
+            # 2. Terminal command execution
+            elif any(k in last_lower for k in ("run command", "terminal", "bash", "execute command", "git clone")) or last_message.strip().startswith("$ ") or last_message.strip().startswith("cd "):
+                cmd = last_message.strip()
+                if cmd.startswith("$ "):
+                    cmd = cmd[2:].strip()
+                cmd_out = self._invoke_tool_safely(bash_security_exec, {"command": cmd}, "DevAgent")
+                output = f"**Executed Sandbox Command:** `{cmd}`\n```json\n{cmd_out}\n```"
+
+            elif "status" in last_lower or ("git" in last_lower and "diff" not in last_lower):
                 status_out = self._invoke_tool_safely(git_status_tool, {}, "DevAgent")
                 output = f"**Git Status:**\n```json\n{status_out}\n```"
             elif "diff" in last_lower:
