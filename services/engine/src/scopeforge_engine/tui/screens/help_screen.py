@@ -23,13 +23,17 @@ built with **Python Textual**, **LangChain**, **LangGraph**, **LlamaIndex RAG**,
 | `F3` | Cycle Execution Mode (`PLAN` ➔ `ARTIFACTS` ➔ `LIVE`) |
 | `F4` | Open LLM Wiki & User Preferences Viewer |
 | `F5` | Clear conversation history stream |
-| `Ctrl+C` | Graceful exit |
-| `Tab` | Switch input / sidebar focus |
+| `F6` / `Ctrl+Y` | Copy last agent response to system clipboard |
+| `Ctrl+V` / `Cmd+V` | Paste from OS system clipboard into prompt or modal inputs |
+| `Ctrl+Q` | Quit application |
+| `Tab` | Switch input / sidebar focus or auto-complete commands |
 
 ---
 
 ### 🚀 Slash Commands
 
+- `/copy [all|code|findings]`: Copy last agent response, full session, code block, or findings to clipboard
+- `/paste`: Paste system clipboard into prompt input
 - `/init`: Initialize `SCOPEFORGE.md` project memory & guidelines in repository root
 - `/diff`: Display git diff of working tree changes in the chat stream
 - `/commit [msg]`: Commit staged changes or auto-generate a commit message

@@ -10,6 +10,7 @@ from textual.widgets.option_list import Option
 
 from ...llm_providers.manager import ProviderManager
 from ...llm_providers.models import LLMConfig, ProviderType
+from ..widgets.clipboard_input import ClipboardInput
 
 
 MODEL_PRESETS = [
@@ -40,7 +41,7 @@ class ModelPickerModal(ModalScreen[str]):
 
             # LIST VIEW (Default fast model switcher)
             with Vertical(id="view-list", classes="" if not self.show_custom_form else "-hidden"):
-                yield Input(placeholder="Type to filter models... (Claude Code style)", id="inp-model-filter")
+                yield ClipboardInput(placeholder="Type to filter models... (Claude Code style)", id="inp-model-filter")
                 yield Label("Navigate with ↑/↓ + Enter, or press 1-9 to select directly:", classes="modal-hint", id="model-hint")
                 yield OptionList(id="model-option-list")
                 with Horizontal(id="modal-buttons-select"):
@@ -53,7 +54,7 @@ class ModelPickerModal(ModalScreen[str]):
                 yield Label("⚙️ Add Custom Model — api_key, base_url, model_name are required (*):", classes="form-section-title")
 
                 yield Label("Alias / Name (optional, auto-generated if blank):", classes="form-label")
-                yield Input(placeholder="e.g. my-custom-model, deepseek-v3", id="inp-cfg-name")
+                yield ClipboardInput(placeholder="e.g. my-custom-model, deepseek-v3", id="inp-cfg-name")
 
                 yield Label("Provider Platform *:", classes="form-label")
                 yield Select(
@@ -72,19 +73,19 @@ class ModelPickerModal(ModalScreen[str]):
                 )
 
                 yield Label("Model Name / ID *:", classes="form-label")
-                yield Input(placeholder="e.g. deepseek/deepseek-chat, gpt-4o, meta-llama/llama-3.3-70b-instruct (required)", id="inp-cfg-model")
+                yield ClipboardInput(placeholder="e.g. deepseek/deepseek-chat, gpt-4o, meta-llama/llama-3.3-70b-instruct (required)", id="inp-cfg-model")
 
                 yield Label("API Key * (required except Ollama/local — or use env:VAR):", classes="form-label")
-                yield Input(placeholder="sk-... / gsk-... / sk-or-v1-... (required)", password=True, id="inp-cfg-key")
+                yield ClipboardInput(placeholder="sk-... / gsk-... / sk-or-v1-... (required)", password=True, id="inp-cfg-key")
 
                 yield Label("API Base URL *:", classes="form-label")
-                yield Input(placeholder="e.g. https://api.deepseek.com/v1, https://openrouter.ai/api/v1, http://localhost:11434/v1 (required)", id="inp-cfg-base")
+                yield ClipboardInput(placeholder="e.g. https://api.deepseek.com/v1, https://openrouter.ai/api/v1, http://localhost:11434/v1 (required)", id="inp-cfg-base")
 
                 yield Label("Sampling Temperature (optional, default 0.2):", classes="form-label")
-                yield Input(value="0.2", placeholder="0.2", id="inp-cfg-temp")
+                yield ClipboardInput(value="0.2", placeholder="0.2", id="inp-cfg-temp")
 
                 yield Label("Max Tokens (optional, default 4096):", classes="form-label")
-                yield Input(value="4096", placeholder="4096", id="inp-cfg-max")
+                yield ClipboardInput(value="4096", placeholder="4096", id="inp-cfg-max")
 
                 yield Label("", id="cfg-status-msg")
 

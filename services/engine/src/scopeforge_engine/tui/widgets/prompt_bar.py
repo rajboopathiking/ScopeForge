@@ -1,4 +1,4 @@
-"""Interactive prompt bar with slash command support and history recall."""
+"""Interactive prompt bar with slash command support, clipboard integration, and history recall."""
 from __future__ import annotations
 
 from typing import Callable, List, Optional
@@ -7,8 +7,12 @@ from textual.containers import Horizontal
 from textual.widget import Widget
 from textual.widgets import Input, Label
 
+from .clipboard_input import ClipboardInput
+
 SLASH_COMMANDS = [
     ("/help", "Show interactive help modal & keyboard shortcuts"),
+    ("/copy", "Copy last response, full session, code, or findings to system clipboard (/copy [all|code|findings])"),
+    ("/paste", "Paste system clipboard into prompt input"),
     ("/model", "Switch LLM provider (e.g. /model gpt-4o, /model claude-3-7-sonnet)"),
     ("/mode", "Switch execution mode (/mode plan, /mode artifacts, /mode live)"),
     ("/agent", "Direct task to specific agent (/agent recon, /agent audit, /agent exploit)"),
@@ -22,9 +26,49 @@ SLASH_COMMANDS = [
     ("/cost", "Show token counters and estimated session cost"),
     ("/findings", "List all discovered security findings"),
     ("/report", "Export comprehensive SecOps report"),
+    ("/init", "Initialize SCOPEFORGE.md project memory"),
+    ("/diff", "Inspect git working tree diff"),
+    ("/commit", "Commit changes with git"),
+    ("/review", "Run Claude Code style review on code changes"),
+    ("/compact", "Compact chat history to preserve context"),
+    ("/doctor", "Run diagnostic health checks"),
+    ("/pr", "Generate pull request summary"),
     ("/clear", "Clear chat history stream"),
     ("/quit", "Exit ScopeForge"),
 ]
+
+
+class PromptInput(ClipboardInput):
+    """Specialized input for PromptBar with history recall and tab completion."""
+
+    def __init__(self, prompt_bar: PromptBar, **kwargs):
+        super().__init__(**kwargs)
+        self.prompt_bar = prompt_bar
+
+    def on_key(self, event) -> None:
+        if event.key == "up":
+            recalled = self.prompt_bar.recall_history(-1)
+            if recalled is not None:
+                self.value = recalled
+                self.cursor_position = len(recalled)
+                event.stop()
+                event.prevent_default()
+        elif event.key == "down":
+            recalled = self.prompt_bar.recall_history(1)
+            if recalled is not None:
+                self.value = recalled
+                self.cursor_position = len(recalled)
+                event.stop()
+                event.prevent_default()
+        elif event.key == "tab":
+            val = self.value.strip()
+            if val.startswith("/"):
+                matches = [cmd for cmd, _ in SLASH_COMMANDS if cmd.startswith(val)]
+                if len(matches) == 1:
+                    self.value = matches[0] + " "
+                    self.cursor_position = len(self.value)
+                    event.stop()
+                    event.prevent_default()
 
 
 class PromptBar(Widget):
@@ -74,12 +118,13 @@ class PromptBar(Widget):
     def compose(self) -> ComposeResult:
         with Horizontal(id="prompt-row"):
             yield Label("❯ ", id="prompt-symbol")
-            yield Input(
+            yield PromptInput(
+                self,
                 placeholder="Ask cybersecurity agents, run recon, audit code, or type / for commands...",
                 id="prompt-input",
             )
         yield Label(
-            "[dim]Commands: /help  /model  /mode  /agent  /skill  /mcp  /config  /rag  /wiki  /status  /cost  /clear[/]",
+            "[dim]Commands: /help  /model  /mode  /copy  /agent  /skill  /mcp  /config  /rag  /wiki  /status  /cost  /clear[/]",
             id="footer-bar",
         )
 
@@ -94,6 +139,27 @@ class PromptBar(Widget):
 
         if self.on_submit_callback:
             self.on_submit_callback(value)
+
+    def recall_history(self, delta: int) -> Optional[str]:
+        if not self.history:
+            return None
+        new_index = self.history_index + delta
+        if new_index < 0:
+            self.history_index = 0
+            return self.history[0]
+        elif new_index >= len(self.history):
+            self.history_index = len(self.history)
+            return ""
+        else:
+            self.history_index = new_index
+            return self.history[self.history_index]
+
+    def paste_clipboard_content(self) -> None:
+        try:
+            inp = self.query_one("#prompt-input", PromptInput)
+            inp.action_paste()
+        except Exception:
+            pass
 
     def focus_input(self):
         try:

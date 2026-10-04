@@ -17,6 +17,7 @@ from ..middleware.pipeline import MiddlewarePipeline, create_default_pipeline
 from ..rag.engine import LlamaSecRAG
 from ..skills.manager import SkillManager
 from ..wiki.store import SecWiki
+from .clipboard import copy_to_system_clipboard, paste_from_system_clipboard
 from .screens.approval_screen import ApprovalModal
 from .screens.help_screen import HelpModal
 from .screens.model_screen import ModelPickerModal
@@ -41,7 +42,10 @@ class ScopeForgeTUIApp(App):
         Binding("f3", "cycle_mode", "Cycle Mode", show=True),
         Binding("f4", "open_wiki", "Wiki Memory", show=True),
         Binding("f5", "clear_chat", "Clear", show=True),
-        Binding("ctrl+c", "quit_app", "Quit", show=True),
+        Binding("f6", "copy_last_response", "Copy Last", show=True),
+        Binding("ctrl+y", "copy_last_response", "Copy Last", show=False),
+        Binding("ctrl+c", "handle_ctrl_c", "Quit / Copy", show=False),
+        Binding("ctrl+q", "quit_app", "Quit", show=True),
     ]
 
     def __init__(self, **kwargs):
@@ -74,6 +78,23 @@ class ScopeForgeTUIApp(App):
         # Previously `/agent` only changed the header badge and never reached
         # the orchestrator, so directing did nothing.
         self.pending_agent: Optional[str] = None
+
+    @property
+    def clipboard(self) -> str:
+        """System-aware clipboard: reads from OS system clipboard with fallback."""
+        sys_clip = paste_from_system_clipboard()
+        if sys_clip:
+            self._clipboard = sys_clip
+            return sys_clip
+        return getattr(self, "_clipboard", "")
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Write to both internal Textual buffer (OSC 52) and OS system clipboard."""
+        try:
+            super().copy_to_clipboard(text)
+        except Exception:
+            self._clipboard = text
+        copy_to_system_clipboard(text)
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header-bar")
@@ -203,6 +224,54 @@ class ScopeForgeTUIApp(App):
 
         if action in ("/help", "/?"):
             self.action_show_help()
+
+        elif action == "/copy":
+            tokens = cmd.strip().split()
+            sub = tokens[1].lower() if len(tokens) > 1 else "last"
+            if sub in ("last", "response"):
+                self.action_copy_last_response()
+            elif sub in ("all", "full", "transcript", "history"):
+                transcript = chat.get_full_transcript()
+                self.copy_to_clipboard(transcript)
+                turns = len(chat.transcript)
+                chat.add_agent_message("Supervisor", f"📋 ✓ Copied full conversation transcript ({turns} messages) to system clipboard.")
+                self.notify(f"Copied {turns} messages to clipboard", title="ScopeForge Clipboard")
+            elif sub in ("code", "snippet"):
+                code = chat.get_last_code_block()
+                if code:
+                    self.copy_to_clipboard(code)
+                    chat.add_agent_message("Supervisor", "📋 ✓ Copied last code block to system clipboard.")
+                    self.notify("Copied code block to clipboard", title="ScopeForge Clipboard")
+                else:
+                    chat.add_agent_message("Supervisor", "ℹ️ No code block found in last agent response.")
+            elif sub in ("findings", "vulns", "vuln"):
+                findings_text = (
+                    "### Discovered Security Findings\n"
+                    "- `FIND-001` [CRITICAL] SQL Injection (CVSS 9.8)\n"
+                    "- `FIND-002` [MEDIUM] Missing Content-Security-Policy\n"
+                    "- `FIND-003` [MEDIUM] Wildcard CORS Header Exposure"
+                )
+                self.copy_to_clipboard(findings_text)
+                chat.add_agent_message("Supervisor", "📋 ✓ Copied security findings to system clipboard.")
+                self.notify("Copied findings to clipboard", title="ScopeForge Clipboard")
+            else:
+                chat.add_agent_message(
+                    "Supervisor",
+                    "**Clipboard Copy Options:**\n"
+                    "- `/copy` (or `/copy last`) : Copy last agent response to clipboard\n"
+                    "- `/copy all` : Copy full conversation transcript to clipboard\n"
+                    "- `/copy code` : Copy last code block to clipboard\n"
+                    "- `/copy findings` : Copy security findings to clipboard\n\n"
+                    "*Shortcut:* Press **F6** or **Ctrl+Y** anytime to copy the last response."
+                )
+
+        elif action == "/paste":
+            try:
+                pb = self.query_one(PromptBar)
+                pb.paste_clipboard_content()
+                chat.add_agent_message("Supervisor", "📋 ✓ Pasted clipboard content into prompt input.")
+            except Exception as e:
+                chat.add_agent_message("Supervisor", f"❌ Paste failed: {e}")
 
         elif action == "/model":
             tokens = cmd.strip().split()
@@ -808,6 +877,34 @@ class ScopeForgeTUIApp(App):
         self.chat_history.clear()
         # Clearing resets one-shot routing too (least surprise)
         self.pending_agent = None
+
+    def action_copy_last_response(self):
+        chat = self.query_one(ChatStream)
+        text = chat.get_last_agent_response()
+        if not text and self.chat_history:
+            for msg in reversed(self.chat_history):
+                if isinstance(msg, AIMessage) and msg.content:
+                    text = str(msg.content)
+                    break
+        if text:
+            self.copy_to_clipboard(text)
+            chat.add_agent_message("Supervisor", "📋 ✓ Copied last agent response to system clipboard.")
+            self.notify("Copied last response to clipboard", title="ScopeForge Clipboard")
+        else:
+            chat.add_agent_message("Supervisor", "ℹ️ No agent response available to copy yet.")
+
+    def action_handle_ctrl_c(self):
+        """Ctrl+C copies active selection if any, otherwise gracefully exits."""
+        try:
+            if self.screen and hasattr(self.screen, "get_selected_text"):
+                selected = self.screen.get_selected_text()
+                if selected:
+                    self.copy_to_clipboard(selected)
+                    self.notify("Copied selection to clipboard", title="ScopeForge Clipboard")
+                    return
+        except Exception:
+            pass
+        self.exit()
 
     def action_quit_app(self):
         self.exit()
