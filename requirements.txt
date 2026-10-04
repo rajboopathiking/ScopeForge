@@ -1,0 +1,11 @@
+# Generated from uv.lock for scopeforge-engine
+# Python >=3.12
+
+anyio==4.15.1
+httpx==0.28.1
+langchain==1.4.3
+langgraph==1.2.12
+llama-index-core==0.14.25
+pydantic==2.13.5
+PyYAML==6.0.3
+textual==8.2.8
