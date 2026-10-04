@@ -438,5 +438,79 @@ async def test_interactive_model_config_modal():
         assert pilot.app.provider_mgr.active_provider_name == "openrouter-free"
 
 
+def test_bash_cli_and_google_web_search_tools():
+    """Verify bash_cli sandbox execution, dangerous pattern guards, and google_web_search."""
+    from scopeforge_engine.sec_tools import bash_cli, google_web_search
+
+    # 1. Test bash_cli success
+    res_bash = json.loads(bash_cli.invoke({"command": "echo 'Hello ScopeForge'"}))
+    assert res_bash.get("success") is True
+    assert res_bash.get("return_code") == 0
+    assert "Hello ScopeForge" in res_bash.get("stdout")
+
+    # 2. Test dangerous pattern block
+    res_blocked = json.loads(bash_cli.invoke({"command": "rm -rf /"}))
+    assert res_blocked.get("success") is False
+    assert "dangerous" in res_blocked.get("error").lower()
+
+    # 3. Test google_web_search live returns results
+    res_search = json.loads(google_web_search.invoke({"query": "python", "max_results": 3}))
+    assert res_search.get("results_count") > 0
+    assert len(res_search.get("results")) > 0
+    first_hit = res_search.get("results")[0]
+    assert "title" in first_hit
+    assert "url" in first_hit
+
+
+@pytest.mark.asyncio
+async def test_commercial_tui_slash_commands_and_routing():
+    """Verify $ <cmd> prefix, /search, /bash, /mcp tools, and DevAgent routing."""
+    from textual.widgets import RichLog
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator
+    from scopeforge_engine.tui.app import ScopeForgeTUIApp
+    from scopeforge_engine.tui.widgets.chat_log import ChatStream
+
+    # 1. Test Orchestrator DevAgent routing for web search and bash
+    orchestrator = MultiAgentSecOpsOrchestrator()
+    search_state = await orchestrator.run("search the web for fast python frameworks")
+    assert search_state["active_agent"] == "dev"
+    assert "Web Search Results" in search_state["messages"][-1].content or "Search" in search_state["messages"][-1].content
+
+    cmd_state = await orchestrator.run("$ echo 'DevAgent Terminal Command'")
+    assert cmd_state["active_agent"] == "dev"
+    assert "DevAgent Terminal Command" in cmd_state["messages"][-1].content
+
+    # 2. Test TUI slash commands execution
+    app = ScopeForgeTUIApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatStream)
+
+        # Test /search
+        app.handle_user_input("/search python asyncio")
+        await pilot.pause()
+        assert any("Web Search Results" in msg.get("content", "") for msg in chat.transcript)
+
+        # Test /bash
+        app.handle_user_input("/bash echo 'Running via /bash'")
+        await pilot.pause()
+        assert any("Running via /bash" in msg.get("content", "") for msg in chat.transcript)
+
+        # Test $ prefix
+        app.handle_user_input("$ echo 'Running via dollar prefix'")
+        await pilot.pause()
+        assert any("Running via dollar prefix" in msg.get("content", "") for msg in chat.transcript)
+
+        # Test /mcp add and enable
+        app.handle_user_input("/mcp add custom-scanner npx custom-sec-scanner")
+        await pilot.pause()
+        assert any("Added and enabled MCP server" in msg.get("content", "") for msg in chat.transcript)
+
+        # Test /mcp tools
+        app.handle_user_input("/mcp tools")
+        await pilot.pause()
+        assert any("Active MCP Registered Tools" in msg.get("content", "") for msg in chat.transcript)
+
+
+
 
 

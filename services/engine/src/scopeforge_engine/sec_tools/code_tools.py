@@ -4,10 +4,13 @@ Provides view_file, edit_file, write_file, glob_files, grep_search, and git inte
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
 import subprocess
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from langchain_core.tools import tool
@@ -253,6 +256,144 @@ def git_commit_tool(message: str) -> str:
         return json.dumps({"error": f"git commit failed: {e}"})
 
 
+@tool
+def bash_cli(command: str, timeout: int = 30) -> str:
+    """Execute a bash / terminal command in the workspace directory.
+    Args:
+        command: The terminal command line string to execute.
+        timeout: Execution timeout in seconds (default 30).
+    """
+    forbidden_patterns = ["rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:", "chmod -R 777 /"]
+    for fb in forbidden_patterns:
+        if fb in command:
+            return json.dumps({
+                "error": f"Command rejected: matches dangerous destructive pattern '{fb}'",
+                "command": command,
+                "success": False,
+            }, indent=2)
+
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return json.dumps({
+            "command": command,
+            "return_code": proc.returncode,
+            "stdout": proc.stdout.strip(),
+            "stderr": proc.stderr.strip(),
+            "success": proc.returncode == 0,
+        }, indent=2)
+    except subprocess.TimeoutExpired:
+        return json.dumps({
+            "error": f"Command timed out after {timeout} seconds: {command}",
+            "command": command,
+            "success": False,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({
+            "error": f"Execution failed: {e}",
+            "command": command,
+            "success": False,
+        }, indent=2)
+
+
+@tool
+def google_web_search(query: str, max_results: int = 5) -> str:
+    """Search Google and the web for live technical documentation, code, CVEs, or general info.
+    Args:
+        query: Search query terms.
+        max_results: Maximum number of search results to return (default 5).
+    """
+    if not query.strip():
+        return json.dumps({"error": "Search query cannot be empty."})
+
+    results: List[Dict[str, str]] = []
+
+    # 1. Tavily API if key is present
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    if tavily_key:
+        try:
+            req_data = json.dumps({"query": query, "max_results": max_results}).encode("utf-8")
+            t_req = urllib.request.Request(
+                "https://api.tavily.com/search",
+                data=req_data,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {tavily_key}"},
+            )
+            with urllib.request.urlopen(t_req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                for r in data.get("results", [])[:max_results]:
+                    results.append({
+                        "title": r.get("title", ""),
+                        "url": r.get("url", ""),
+                        "snippet": r.get("content", ""),
+                    })
+        except Exception:
+            pass
+
+    # 2. DuckDuckGo live HTML POST scraper (zero-credential fallback)
+    if not results:
+        try:
+            url = "https://html.duckduckgo.com/html/"
+            form_data = urllib.parse.urlencode({"q": query}).encode("utf-8")
+            ddg_req = urllib.request.Request(
+                url,
+                data=form_data,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Referer": "https://html.duckduckgo.com/",
+                },
+            )
+            with urllib.request.urlopen(ddg_req, timeout=8) as resp:
+                content = resp.read().decode("utf-8", errors="ignore")
+
+            titles = re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>', content)
+            snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)</a>', content)
+
+            for i in range(min(len(titles), max_results)):
+                href, title_html = titles[i]
+                if "uddg=" in href:
+                    m = re.search(r"uddg=([^&]+)", href)
+                    clean_url = urllib.parse.unquote(m.group(1)) if m else href
+                else:
+                    clean_url = href
+                title = html.unescape(re.sub(r"<[^>]+>", "", title_html).strip())
+                snip = html.unescape(re.sub(r"<[^>]+>", "", snippets[i]).strip()) if i < len(snippets) else ""
+                if clean_url and title:
+                    results.append({
+                        "title": title,
+                        "url": clean_url,
+                        "snippet": snip,
+                    })
+        except Exception:
+            pass
+
+    # 3. Wikipedia API fallback
+    if not results:
+        try:
+            wiki_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&format=json"
+            wiki_req = urllib.request.Request(wiki_url, headers={"User-Agent": "ScopeForge/1.0"})
+            with urllib.request.urlopen(wiki_req, timeout=5) as w_resp:
+                w_data = json.loads(w_resp.read().decode("utf-8"))
+                for item in w_data.get("query", {}).get("search", [])[:max_results]:
+                    results.append({
+                        "title": item.get("title", ""),
+                        "url": f"https://en.wikipedia.org/wiki/{urllib.parse.quote(item.get('title', ''))}",
+                        "snippet": html.unescape(re.sub(r"<[^>]+>", "", item.get("snippet", "")).strip()),
+                    })
+        except Exception:
+            pass
+
+    return json.dumps({
+        "query": query,
+        "results_count": len(results),
+        "results": results,
+    }, indent=2)
+
+
 ALL_CODE_TOOLS = [
     view_file,
     edit_file,
@@ -262,4 +403,7 @@ ALL_CODE_TOOLS = [
     git_diff_tool,
     git_status_tool,
     git_commit_tool,
+    bash_cli,
+    google_web_search,
 ]
+

@@ -16,12 +16,14 @@ from ..a2a.bus import A2ABus
 from ..a2a.protocol import A2AIntent, A2AMessage
 from ..llm_providers.manager import ProviderManager
 from ..llm_providers.models import LLMConfig, ProviderType
+from ..mcp_bridge import MCPBridge
 from ..middleware.pipeline import MiddlewarePipeline, create_default_pipeline
 from ..rag.engine import LlamaSecRAG
 from ..sec_tools import (
     ALL_CODE_TOOLS,
     ALL_CYBER_TOOLS,
     ALL_SUITE_TOOLS,
+    bash_cli,
     bash_security_exec,
     cve_advisory_search,
     edit_file,
@@ -31,6 +33,7 @@ from ..sec_tools import (
     git_diff_tool,
     git_status_tool,
     glob_files,
+    google_web_search,
     grep_search,
     recon_port_scan,
     sast_code_audit,
@@ -56,6 +59,7 @@ class MultiAgentSecOpsOrchestrator:
         wiki: Optional[SecWiki] = None,
         a2a_bus: Optional[A2ABus] = None,
         skill_manager: Optional[SkillManager] = None,
+        mcp_bridge: Optional[MCPBridge] = None,
     ):
         self.provider_mgr = provider_manager or ProviderManager()
         self.pipeline = pipeline or create_default_pipeline()
@@ -63,6 +67,7 @@ class MultiAgentSecOpsOrchestrator:
         self.wiki = wiki or SecWiki()
         self.a2a_bus = a2a_bus or A2ABus()
         self.skill_mgr = skill_manager or SkillManager()
+        self.mcp = mcp_bridge or MCPBridge()
         self.custom_loader = CustomAgentLoader()
 
         self.graph = self._build_graph()
@@ -164,7 +169,14 @@ class MultiAgentSecOpsOrchestrator:
                         r"\b(report|cvss|remediation|findings|assessment)\b"
                     ):
                         target_agent = "report"
-                    elif _has(r"(git\s+(status|diff|commit|clone)|view\s+file|read\s+file|edit\s+file|write\s+file|\bglob\b|\bgrep\b|search\s+code|find\s+file)") or _has(r"\b(install\s+skill|install|clone|terminal|bash|shell|exec|run\s+command|run\s+in\s+terminal|mkdir|cp\s+-r)\b"):
+                    elif (
+                        _has(r"(git\s+(status|diff|commit|clone)|view\s+file|read\s+file|edit\s+file|write\s+file|\bglob\b|\bgrep\b|search\s+code|find\s+file)")
+                        or _has(r"\b(install\s+skill|install|clone|terminal|bash|shell|exec|run\s+command|run\s+in\s+terminal|mkdir|cp\s+-r)\b")
+                        or _has(r"\b(google|web\s*search|search\s*(the\s*)?web|lookup\s*online|search\s*online|browse)\b")
+                        or _has(r"\bmcp\s+(add|enable|disable|tools|list)\b")
+                        or last_lower.startswith("$ ")
+                        or last_lower.startswith("! ")
+                    ):
                         target_agent = "dev"
 
             if target_agent != "supervisor":
@@ -522,13 +534,83 @@ class MultiAgentSecOpsOrchestrator:
                 else:
                     output = "**Skill Installation:** Please provide a valid git repository URL to install."
 
-            # 2. Terminal command execution
-            elif any(k in last_lower for k in ("run command", "terminal", "bash", "execute command", "git clone")) or last_message.strip().startswith("$ ") or last_message.strip().startswith("cd "):
+            # 2. Web search / Google lookup
+            elif any(k in last_lower for k in ("google", "web search", "search the web", "search online", "lookup online")) or (("search" in last_lower or "lookup" in last_lower) and not any(k in last_lower for k in ("grep", "code", "file", "repo", "cve", "sast"))):
+                q = last_message
+                for prefix in ("/search", "/web", "/google", "search the web for", "search online for", "web search for", "google for", "google", "search for", "search", "lookup"):
+                    if last_lower.startswith(prefix):
+                        q = last_message[len(prefix):].strip(" :\"'")
+                        break
+                search_raw = self._invoke_tool_safely(google_web_search, {"query": q or last_message, "max_results": 5}, "DevAgent")
+                try:
+                    search_res = json.loads(search_raw)
+                    hits = search_res.get("results", [])
+                    if hits:
+                        cards = [f"- **[{h.get('title')}]({h.get('url')})**\n  {h.get('snippet')}\n  `{h.get('url')}`" for h in hits]
+                        output = f"🌐 **Web Search Results for '{q or last_message}':**\n\n" + "\n\n".join(cards)
+                    else:
+                        output = f"🌐 No live web results found for: `{q or last_message}`"
+                except Exception:
+                    output = f"🌐 **Web Search Output:**\n```json\n{search_raw}\n```"
+
+            # 3. MCP server management
+            elif "mcp" in last_lower and any(w in last_lower for w in ("add", "enable", "disable", "list", "tools")):
+                if "add" in last_lower:
+                    import re
+                    m_add = re.search(r"add\s+(?:mcp\s+server\s+)?([a-zA-Z0-9_\-]+)\s+(.+)", last_message, re.IGNORECASE)
+                    if m_add:
+                        s_name = m_add.group(1).strip()
+                        s_cmd = m_add.group(2).strip()
+                        try:
+                            try:
+                                self.mcp.registry.remove_server(s_name)
+                            except Exception:
+                                pass
+                            self.mcp.registry.add_server(s_name, s_cmd)
+                            self.mcp.enable_server(s_name)
+                            output = f"✓ **Added & Enabled MCP Server:** `{s_name}` (`{s_cmd}`)"
+                        except Exception as e:
+                            output = f"❌ Error adding MCP server: {e}"
+                    else:
+                        output = "Usage: Please specify MCP server name and command (e.g. `add mcp server my-server npx ...`)"
+                elif "tools" in last_lower:
+                    tools = self.mcp.get_langchain_tools()
+                    t_list = "\n".join(f"- **`{t.name}`**: {t.description}" for t in tools)
+                    output = f"🔌 **Active MCP Tools ({len(tools)}):**\n\n{t_list or 'No MCP tools active.'}"
+                elif "enable" in last_lower:
+                    s_name = last_message.split()[-1].strip()
+                    try:
+                        self.mcp.enable_server(s_name)
+                        output = f"✓ **Enabled MCP Server:** `{s_name}`"
+                    except Exception as e:
+                        output = f"❌ Error enabling MCP server: {e}"
+                elif "disable" in last_lower:
+                    s_name = last_message.split()[-1].strip()
+                    try:
+                        self.mcp.disable_server(s_name)
+                        output = f"✓ **Disabled MCP Server:** `{s_name}`"
+                    except Exception as e:
+                        output = f"❌ Error disabling MCP server: {e}"
+                else:
+                    servers = self.mcp.list_servers()
+                    s_list = "\n".join(f"- **{s['name']}**: {'[ENABLED]' if s['enabled'] else '[DISABLED]'} (`{s['command']}`)" for s in servers)
+                    output = f"🔌 **Model Context Protocol (MCP) Servers:**\n\n{s_list}"
+
+            # 4. Terminal command execution
+            elif any(k in last_lower for k in ("run command", "terminal", "bash", "execute command", "git clone")) or last_message.strip().startswith("$ ") or last_message.strip().startswith("!") or last_message.strip().startswith("cd "):
                 cmd = last_message.strip()
                 if cmd.startswith("$ "):
                     cmd = cmd[2:].strip()
-                cmd_out = self._invoke_tool_safely(bash_security_exec, {"command": cmd}, "DevAgent")
-                output = f"**Executed Sandbox Command:** `{cmd}`\n```json\n{cmd_out}\n```"
+                elif cmd.startswith("!"):
+                    cmd = cmd[1:].strip()
+                cmd_out = self._invoke_tool_safely(bash_cli, {"command": cmd}, "DevAgent")
+                try:
+                    res_j = json.loads(cmd_out)
+                    out_text = res_j.get("stdout") or res_j.get("stderr") or res_j.get("error") or "Executed successfully with no output."
+                    rc = res_j.get("return_code", 0 if res_j.get("success") else 1)
+                    output = f"💻 **Sandbox Terminal Command:** `{cmd}`\n```text\n{out_text}\n```\n*Return Code:* `{rc}`"
+                except Exception:
+                    output = f"💻 **Executed Sandbox Command:** `{cmd}`\n```json\n{cmd_out}\n```"
 
             elif "status" in last_lower or ("git" in last_lower and "diff" not in last_lower):
                 status_out = self._invoke_tool_safely(git_status_tool, {}, "DevAgent")
@@ -537,7 +619,7 @@ class MultiAgentSecOpsOrchestrator:
                 staged = "staged" in last_lower or "cached" in last_lower
                 diff_out = self._invoke_tool_safely(git_diff_tool, {"staged": staged}, "DevAgent")
                 output = f"**Git Diff:**\n```json\n{diff_out}\n```"
-            elif "grep" in last_lower or "search" in last_lower:
+            elif "grep" in last_lower or ("search" in last_lower and "code" in last_lower):
                 query = last_message.split()[-1].strip("\"'") if len(last_message.split()) > 1 else "def "
                 grep_out = self._invoke_tool_safely(grep_search, {"query": query}, "DevAgent")
                 output = f"**Code Search Results:**\n```json\n{grep_out}\n```"

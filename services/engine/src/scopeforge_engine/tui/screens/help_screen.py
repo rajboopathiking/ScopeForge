@@ -35,6 +35,9 @@ built with **Python Textual**, **LangChain**, **LangGraph**, **LlamaIndex RAG**,
 
 ### 🚀 Slash Commands
 
+- `$ <cmd>` or `! <cmd>`: Direct terminal execution shortcut (e.g. `$ ls`, `$ git status`, `$ pytest`)
+- `/bash <cmd>` (or `/run`): Safely execute shell/terminal command in sandbox workspace
+- `/search <query>` (or `/web`, `/google`): Live web & Google technical search with instant snippet cards
 - `/copy [all|code|export|findings]`: Copy last agent response, full session, code block, or findings to clipboard
 - `/mouse`: Toggle between TUI mouse and native terminal selection mode (F7)
 - `/export [file]`: Export complete session transcript to a Markdown file
@@ -49,8 +52,8 @@ built with **Python Textual**, **LangChain**, **LangGraph**, **LlamaIndex RAG**,
 - `/model [name]`: Switch active LLM or open interactive model picker
 - `/mode <plan|artifacts|live>`: Change execution mode (ScopeGate policy guarded)
 - `/agent <name>`: Route next mission to a specialist (`dev`, `recon`, `audit`, `exploit`, `report`)
-- `/skill [list|name]`: Discover and toggle specialized skills (`subdomain-recon`, `api-idor-audit`, `cve-triage`)
-- `/mcp [list|add|enable|disable]`: Manage Model Context Protocol (MCP) servers (`/mcp add <name> <cmd>`)
+- `/skill [list|name|install <url>]`: Discover, toggle, or install skills (`/skill install <git-url>`)
+- `/mcp [list|add|enable|disable|tools]`: Manage MCP servers & inspect active tools (`/mcp tools`)
 - `/config`: Inspect active configuration, model settings, and safety policies
 - `/status`: Show full mission status, target info, and agent states
 - `/cost`: Show token usage telemetry and session costs

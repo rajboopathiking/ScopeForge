@@ -1,11 +1,13 @@
 """Cybersecurity and Developer Tools Package."""
 from .code_tools import (
     ALL_CODE_TOOLS,
+    bash_cli,
     edit_file,
     git_commit_tool,
     git_diff_tool,
     git_status_tool,
     glob_files,
+    google_web_search,
     grep_search,
     view_file,
     write_file,
@@ -34,6 +36,8 @@ __all__ = [
     "falsifiable_poc_runner",
     "evidence_recorder",
     "bash_security_exec",
+    "bash_cli",
+    "google_web_search",
     "view_file",
     "edit_file",
     "write_file",

@@ -72,6 +72,7 @@ class ScopeForgeTUIApp(App):
             wiki=self.wiki,
             a2a_bus=self.a2a_bus,
             skill_manager=self.skill_mgr,
+            mcp_bridge=self.mcp,
         )
 
         self.chat_history: List[Any] = []
@@ -222,6 +223,16 @@ class ScopeForgeTUIApp(App):
     def handle_user_input(self, text: str):
         text = text.strip()
         if not text:
+            return
+
+        # OpenCode / Claude Code quick terminal command prefix: $ <cmd> or ! <cmd>
+        if text.startswith("$"):
+            cmd_body = text[1:].strip()
+            self.execute_slash_command(f"/bash {cmd_body}")
+            return
+        if text.startswith("!"):
+            cmd_body = text[1:].strip()
+            self.execute_slash_command(f"/bash {cmd_body}")
             return
 
         # Check for slash commands
@@ -458,6 +469,10 @@ class ScopeForgeTUIApp(App):
                 if len(mcp_parts) == 2:
                     srv_name, srv_cmd = mcp_parts
                     try:
+                        try:
+                            self.mcp.registry.remove_server(srv_name)
+                        except Exception:
+                            pass
                         self.mcp.registry.add_server(srv_name, srv_cmd)
                         self.mcp.enable_server(srv_name)
                         chat.add_agent_message("Supervisor", f"✓ Added and enabled MCP server: **{srv_name}** (`{srv_cmd}`)")
@@ -479,10 +494,55 @@ class ScopeForgeTUIApp(App):
                     chat.add_agent_message("Supervisor", f"✓ Disabled MCP server: **{srv_name}**")
                 except Exception as e:
                     chat.add_agent_message("Supervisor", f"❌ Error: {e}")
+            elif len(parts) > 1 and parts[1].lower() in ("tools", "tool"):
+                tools = self.mcp.get_langchain_tools()
+                if tools:
+                    t_list = "\n".join(f"- **`{t.name}`**: {t.description}" for t in tools)
+                    chat.add_agent_message("Supervisor", f"🔌 **Active MCP Registered Tools ({len(tools)}):**\n\n{t_list}")
+                else:
+                    chat.add_agent_message("Supervisor", "🔌 No MCP tools currently active. Enable an MCP server using `/mcp enable <name>`.")
             else:
                 servers = self.mcp.list_servers()
                 s_list = "\n".join(f"- **{s['name']}**: {'[ENABLED]' if s['enabled'] else '[DISABLED]'} (`{s['command']}`)" for s in servers)
-                chat.add_agent_message("Supervisor", f"🔌 **Model Context Protocol (MCP) Servers:**\n\n{s_list}\n\n*Commands: `/mcp add <name> <cmd>`, `/mcp enable <name>`, `/mcp disable <name>`*")
+                chat.add_agent_message("Supervisor", f"🔌 **Model Context Protocol (MCP) Servers:**\n\n{s_list}\n\n*Commands: `/mcp add <name> <cmd>`, `/mcp enable <name>`, `/mcp disable <name>`, `/mcp tools`*")
+
+        elif action in ("/search", "/web", "/google"):
+            query_str = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            if not query_str:
+                chat.add_agent_message("Supervisor", "Usage: `/search <query>` (e.g. `/search python 3.13` or `/web cve-2024-3400`)")
+            else:
+                chat.add_agent_message("Supervisor", f"🔍 Searching Google & Web for `{query_str}`...")
+                from ..sec_tools import google_web_search
+                raw = google_web_search.invoke({"query": query_str, "max_results": 5})
+                try:
+                    res = json.loads(raw)
+                    hits = res.get("results", [])
+                    if hits:
+                        cards = [f"- **[{h.get('title')}]({h.get('url')})**\n  {h.get('snippet')}\n  `{h.get('url')}`" for h in hits]
+                        chat.add_agent_message("Supervisor", f"🌐 **Web Search Results for '{query_str}':**\n\n" + "\n\n".join(cards))
+                    else:
+                        chat.add_agent_message("Supervisor", f"🌐 No live web results found for query: `{query_str}`")
+                except Exception as e:
+                    chat.add_agent_message("Supervisor", f"❌ Search error: {e}")
+
+        elif action in ("/bash", "/run", "/sh", "/exec"):
+            cmd_str = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            if not cmd_str:
+                chat.add_agent_message("Supervisor", "Usage: `/bash <command>` or `$ <command>` (e.g. `/bash ls -la` or `$ git status`)")
+            else:
+                from ..sec_tools import bash_cli
+                raw = bash_cli.invoke({"command": cmd_str})
+                try:
+                    res = json.loads(raw)
+                    out_text = res.get("stdout") or res.get("stderr") or res.get("error") or "Executed successfully with no output."
+                    rc = res.get("return_code", 0 if res.get("success") else 1)
+                    status_badge = "✓ SUCCESS" if res.get("success") else "❌ FAILED"
+                    chat.add_agent_message(
+                        "Supervisor",
+                        f"💻 **Sandbox Terminal Command:** `{cmd_str}` ({status_badge}, exit code `{rc}`)\n\n```text\n{out_text}\n```"
+                    )
+                except Exception as e:
+                    chat.add_agent_message("Supervisor", f"❌ Bash error: {e}")
 
         elif action == "/config":
             tokens = cmd.strip().split()
