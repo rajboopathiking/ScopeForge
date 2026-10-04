@@ -34,7 +34,11 @@ SLASH_COMMANDS = [
     ("/doctor", "Run diagnostic health checks"),
     ("/pr", "Generate pull request summary"),
     ("/mouse", "Toggle terminal native mouse selection mode (F7)"),
-    ("/export", "Export conversation history to markdown file (/export [file])"),
+    ("/search", "Perform live web search (/search <query>)"),
+    ("/bash", "Run command in terminal sandbox (/bash <cmd> or $ <cmd>)"),
+    ("/goal", "Autonomous multi-step task execution toward a stated goal"),
+    ("/plan", "Plan out complex tasks step-by-step in safe PLAN mode"),
+    ("/tasks", "List ongoing or background tasks"),
     ("/clear", "Clear chat history stream"),
     ("/quit", "Exit ScopeForge"),
 ]

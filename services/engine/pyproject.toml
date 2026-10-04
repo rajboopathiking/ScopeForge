@@ -47,7 +47,9 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "respx>=0.22", "hypothesis>=6"]
 
 [project.scripts]
 scopeforge = "scopeforge_engine.tui.app:main"
+sourceforge = "scopeforge_engine.tui.app:main"
 sf = "scopeforge_engine.tui.app:main"
+agi = "scopeforge_engine.tui.app:main"
 scopeforge-tui = "scopeforge_engine.tui.app:main"
 scopeforge-engine = "scopeforge_engine.server:main"
 

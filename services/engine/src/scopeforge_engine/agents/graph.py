@@ -284,7 +284,7 @@ class MultiAgentSecOpsOrchestrator:
                         tc_id = tc.get("id") or f"call_{tc_name}_{iteration}"
 
                         if cb:
-                            cb("supervisor", f"\n🛠️ *Invoking tool `{tc_name}`*...\n")
+                            cb("supervisor", json.dumps({"__type__": "tool_call", "name": tc_name, "args": tc_args}))
 
                         if tc_name in tool_map:
                             t_out = self._invoke_tool_safely(tool_map[tc_name], tc_args, "Supervisor")
@@ -292,8 +292,7 @@ class MultiAgentSecOpsOrchestrator:
                             t_out = f"Tool '{tc_name}' is not registered."
 
                         if cb:
-                            preview = (str(t_out)[:160] + "...") if len(str(t_out)) > 160 else str(t_out)
-                            cb("supervisor", f"```text\n{preview}\n```\n")
+                            cb("supervisor", json.dumps({"__type__": "tool_result", "name": tc_name, "result": str(t_out)}))
 
                         current_msgs.append(ToolMessage(content=str(t_out), tool_call_id=tc_id, name=tc_name))
 

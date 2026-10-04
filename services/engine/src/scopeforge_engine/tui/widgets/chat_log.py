@@ -189,13 +189,34 @@ class ChatStream(Widget):
         self.transcript.append({"role": f"{agent.capitalize()}Agent", "content": markdown_content})
 
     def add_tool_call(self, tool_name: str, args: Dict[str, Any], status: str = "RUNNING"):
+        if getattr(self, "_stream_active", False):
+            self.finish_agent_stream()
         args_str = json.dumps(args, default=str)
-        if len(args_str) > 80:
-            args_str = args_str[:77] + "..."
-        status_color = "green" if status == "SUCCESS" else ("red" if "BLOCK" in status else "yellow")
+        if len(args_str) > 100:
+            args_str = args_str[:97] + "..."
+        status_color = "green" if status in ("SUCCESS", "COMPLETED") else ("red" if "BLOCK" in status or "FAIL" in status else "yellow")
         try:
             log = self.query_one("#chat-log", RichLog)
-            log.write(f"  [dim]⚙ Tool Call:[/] [bold]{tool_name}[/]({args_str}) -> [{status_color}][{status}][/]")
+            log.write(f"\n  [dim #8b949e]╭─ ⚙️ [bold #58a6ff]Tool Call:[/] [bold #f0883e]{self._escape(tool_name)}[/] [{status_color}][{status}][/] ───────────────────────╮[/]")
+            log.write(f"  [dim #8b949e]│[/] [dim]Arguments:[/] {self._escape(args_str)}")
+            log.write(f"  [dim #8b949e]╰────────────────────────────────────────────────────────╯[/]\n")
+        except Exception:
+            pass
+
+    def add_tool_result(self, tool_name: str, result: str, status: str = "SUCCESS"):
+        if getattr(self, "_stream_active", False):
+            self.finish_agent_stream()
+        status_color = "green" if status == "SUCCESS" else "red"
+        lines = result.strip().splitlines()
+        preview = "\n".join(lines[:6])
+        if len(lines) > 6:
+            preview += f"\n... ({len(lines) - 6} more lines)"
+        try:
+            log = self.query_one("#chat-log", RichLog)
+            log.write(f"  [dim #8b949e]╭─ 📦 [bold {status_color}]{self._escape(tool_name)} Result[/] [{status_color}][{status}][/] ──────────────────────────╮[/]")
+            for p_line in preview.splitlines():
+                log.write(f"  [dim #8b949e]│[/] {self._escape(p_line)}")
+            log.write(f"  [dim #8b949e]╰────────────────────────────────────────────────────────╯[/]\n")
         except Exception:
             pass
 

@@ -868,6 +868,34 @@ class ScopeForgeTUIApp(App):
             )
             chat.add_agent_message("Supervisor", pr_template)
 
+        elif action == "/goal":
+            goal_text = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            if not goal_text:
+                chat.add_agent_message("Supervisor", "Usage: `/goal <objective>` — autonomously work through steps to achieve objective.")
+                return
+            chat.add_agent_message("Supervisor", f"🎯 **Autonomous Goal Activated:** `{goal_text}`\n*ScopeForge agents will autonomously plan and execute tools until completion.*")
+            self.run_agent_task(f"Autonomous goal execution: {goal_text}")
+
+        elif action == "/plan":
+            plan_text = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+            if not plan_text:
+                chat.add_agent_message("Supervisor", "Usage: `/plan <objective>` — plan out multi-step strategy with safety bounds.")
+                return
+            chat.add_agent_message("Supervisor", f"📋 **Planning Mode:** Analyzing `{plan_text}` under ScopeGate RoE guidelines...")
+            self.run_agent_task(f"Plan a structured step-by-step implementation for: {plan_text}")
+
+        elif action == "/tasks":
+            is_busy = getattr(self, "_current_task", None) and not self._current_task.done()
+            task_status = (
+                "⚙️ **ScopeForge Background Task Status:**\n\n"
+                f"- **Active Task Running**: `{'YES (Autonomous Agent Execution)' if is_busy else 'NO (Idle)'}`\n"
+                f"- **Total Session Tokens**: `{self.total_tokens:,}`\n"
+                f"- **Total A2A Events**: `{len(self.a2a_bus.messages)}`\n"
+                f"- **Active MCP Tools**: `{len(self.mcp.get_langchain_tools())}`\n"
+                + ("\n*Press <kbd>Ctrl+C</kbd> at any time to cancel running task.*" if is_busy else "")
+            )
+            chat.add_agent_message("Supervisor", task_status)
+
         elif action == "/clear":
             self.action_clear_chat()
 
@@ -898,6 +926,17 @@ class ScopeForgeTUIApp(App):
 
             def _on_token(agent: str, chunk: str):
                 nonlocal stream_started
+                if isinstance(chunk, str) and chunk.startswith('{"__type__":'):
+                    try:
+                        data = json.loads(chunk)
+                        if data.get("__type__") == "tool_call":
+                            chat.add_tool_call(data.get("name", ""), data.get("args", {}), "RUNNING")
+                            return
+                        elif data.get("__type__") == "tool_result":
+                            chat.add_tool_result(data.get("name", ""), data.get("result", ""), "SUCCESS")
+                            return
+                    except Exception:
+                        pass
                 if not stream_started:
                     chat.start_agent_stream(agent)
                     stream_started = True
@@ -949,12 +988,17 @@ class ScopeForgeTUIApp(App):
                 self.estimated_cost += 0.001 if "free" in self.provider_mgr.active_provider_name or "mock" in self.provider_mgr.active_provider_name else 0.003
                 self._sync_header()
 
+            except asyncio.CancelledError:
+                if stream_started:
+                    chat.finish_agent_stream()
             except Exception as e:
                 if stream_started:
                     chat.finish_agent_stream()
                 chat.add_agent_message("Supervisor", f"❌ Error during multi-agent orchestration: {e}")
+            finally:
+                self._current_task = None
 
-        asyncio.create_task(_execute())
+        self._current_task = asyncio.create_task(_execute())
 
     def action_show_help(self):
         self.push_screen(HelpModal())
@@ -1024,7 +1068,20 @@ class ScopeForgeTUIApp(App):
             chat.add_agent_message("Supervisor", "ℹ️ No agent response available to copy yet.", record_as_last_response=False)
 
     def action_handle_ctrl_c(self):
-        """Ctrl+C / Cmd+C copies active selection if any, otherwise gracefully exits."""
+        """Ctrl+C / Cmd+C: Cancels running task if active, copies selection if highlighted, otherwise exits."""
+        if getattr(self, "_current_task", None) and not self._current_task.done():
+            self._current_task.cancel()
+            self._current_task = None
+            chat = self.query_one(ChatStream)
+            chat.finish_agent_stream()
+            chat.add_agent_message(
+                "Supervisor",
+                "⚠️ **Task Interrupted:** Autonomous execution was cancelled by user (<kbd>Ctrl+C</kbd>)."
+            )
+            self._sync_header()
+            self.notify("Task cancelled", title="ScopeForge")
+            return
+
         try:
             if self.screen and hasattr(self.screen, "get_selected_text"):
                 selected = self.screen.get_selected_text()
