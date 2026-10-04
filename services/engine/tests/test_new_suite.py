@@ -44,10 +44,10 @@ def test_custom_provider_normalization_and_deduplication():
     curl_paste = "curl -H 'Authorization: Bearer sk-ant-secret123' https://api.anthropic.com"
     assert ProviderManager._sanitize_api_key(curl_paste) == "sk-ant-secret123"
 
-    # Test base URL normalization
-    assert ProviderManager._normalize_base_for_provider(ProviderType.CUSTOM, "https://api.apmix.ai") == "https://api.apmix.ai/v1"
+    # Test base URL normalization (for CUSTOM: no path appending, directly use that api_base)
+    assert ProviderManager._normalize_base_for_provider(ProviderType.CUSTOM, "https://api.apmix.ai") == "https://api.apmix.ai"
     assert ProviderManager._normalize_base_for_provider(ProviderType.CUSTOM, "https://api.apmix.ai/v1") == "https://api.apmix.ai/v1"
-    assert ProviderManager._normalize_base_for_provider(ProviderType.CUSTOM, "https://api.apmix.ai/chat/completions") == "https://api.apmix.ai/v1"
+    assert ProviderManager._normalize_base_for_provider(ProviderType.CUSTOM, "https://api.apmix.ai/v1/chat/completions") == "https://api.apmix.ai/v1"
     assert ProviderManager._normalize_base_for_provider(ProviderType.OPENROUTER, "https://openrouter.ai") == "https://openrouter.ai/api/v1"
     assert ProviderManager._normalize_base_for_provider(ProviderType.OLLAMA, "http://localhost:11434") == "http://localhost:11434/v1"
 
@@ -57,7 +57,7 @@ def test_custom_provider_normalization_and_deduplication():
         name="test-apmix-claude",
         model="claude-sonnet-4-6-free",
         api_key="apx_live_testkeyapx_live_testkey",
-        api_base="https://api.apmix.ai",
+        api_base="https://api.apmix.ai/v1",
         set_active=False,
     )
     assert cfg.provider == ProviderType.CUSTOM
@@ -75,7 +75,8 @@ def test_custom_provider_normalization_and_deduplication():
     )
     healed = ProviderManager._migrate_config(legacy_cfg)
     assert healed.provider == ProviderType.CUSTOM
-    assert healed.api_base == "https://api.apmix.ai/v1"
+    # Custom directly uses configured api_base without path appending
+    assert healed.api_base == "https://api.apmix.ai"
     assert healed.api_key == "apx_live_heal123"
 
     # Clean up test provider

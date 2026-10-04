@@ -212,6 +212,15 @@ class ProviderManager:
         if not base:
             return base
         nb = base.strip().rstrip("/")
+
+        # For custom providers: no path appending — directly use that api_base as configured
+        if provider == ProviderType.CUSTOM:
+            for suffix in ("/chat/completions", "/messages", "/responses"):
+                if nb.endswith(suffix):
+                    nb = nb[: -len(suffix)].rstrip("/")
+                    break
+            return nb
+
         # Strip full-endpoint paste to base (SDK appends path)
         for suffix in ("/chat/completions", "/messages", "/responses"):
             if nb.endswith(suffix):
@@ -235,20 +244,6 @@ class ProviderManager:
                 nb = nb + "/v1"
             elif not nb.endswith("/v1"):
                 nb = nb + "/v1"
-        elif provider in (ProviderType.CUSTOM, ProviderType.OPENAI):
-            from urllib.parse import urlparse
-            p = urlparse(nb)
-            path = (p.path or "").rstrip("/")
-            if not path or path == "/api":
-                nb = nb.rstrip("/") + ("/v1" if path != "/api" else "/v1")
-            elif not (
-                path.endswith("/v1")
-                or path.endswith("/v2")
-                or path.endswith("/v3")
-                or path.endswith("/v1beta")
-                or "/v1" in path
-            ):
-                nb = nb.rstrip("/") + "/v1"
         return nb
 
     @staticmethod
