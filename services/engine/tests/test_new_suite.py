@@ -721,3 +721,32 @@ def test_context_compaction_and_tool_capping():
     assert sig.parameters["timeout"].default == 120
 
 
+@pytest.mark.asyncio
+async def test_long_running_goal_and_iterations_config():
+    """Verify autonomous /goal and /config set iterations for long-running workflows."""
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator
+    from scopeforge_engine.tui.app import ScopeForgeTUIApp
+    from scopeforge_engine.tui.widgets.chat_log import ChatStream
+
+    # 1. Test orchestrator.run with customized max_iterations
+    orchestrator = MultiAgentSecOpsOrchestrator()
+    state = await orchestrator.run("list current project files", max_iterations=10)
+    assert state.get("max_iterations") == 10
+
+    # 2. Test TUI /config set iterations and /goal command
+    app = ScopeForgeTUIApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatStream)
+
+        # Configure iterations to 45
+        app.execute_slash_command("/config set iterations 45")
+        assert app.max_iterations == 45
+        assert "Autonomous max iterations updated to `45`" in chat.last_agent_response
+
+        # Activate autonomous goal
+        app.execute_slash_command("/goal Discover perimeter and compile audit report")
+        assert any("Autonomous Goal Activated" in msg.get("content", "") for msg in chat.transcript)
+        assert any("45 steps" in msg.get("content", "") for msg in chat.transcript)
+
+
+

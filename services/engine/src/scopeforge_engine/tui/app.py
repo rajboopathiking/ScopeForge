@@ -90,6 +90,8 @@ class ScopeForgeTUIApp(App):
         # Previously `/agent` only changed the header badge and never reached
         # the orchestrator, so directing did nothing.
         self.pending_agent: Optional[str] = None
+        self.max_iterations: int = 25
+
 
     @property
     def clipboard(self) -> str:
@@ -763,11 +765,23 @@ class ScopeForgeTUIApp(App):
                         chat.add_agent_message("Supervisor", "✗ Mode must be one of: `plan`, `artifacts`, `live`")
                     return
 
+                elif key_name in ("iterations", "max_iterations", "steps"):
+                    try:
+                        iter_val = int(val)
+                        if iter_val < 1 or iter_val > 100:
+                            chat.add_agent_message("Supervisor", "✗ Iterations must be between 1 and 100.")
+                        else:
+                            self.max_iterations = iter_val
+                            chat.add_agent_message("Supervisor", f"✓ Autonomous max iterations updated to `{iter_val}`.")
+                    except ValueError:
+                        chat.add_agent_message("Supervisor", f"✗ Invalid iteration count '{val}'. Must be an integer.")
+                    return
+
                 else:
                     chat.add_agent_message(
                         "Supervisor",
                         f"✗ Unknown configuration key '{key_name}'. Supported keys:\n"
-                        "`model`, `provider`, `key`, `base`, `temp`, `tokens`, `mode`"
+                        "`model`, `provider`, `key`, `base`, `temp`, `tokens`, `mode`, `iterations`"
                     )
                     return
 
@@ -974,8 +988,14 @@ class ScopeForgeTUIApp(App):
             if not goal_text:
                 chat.add_agent_message("Supervisor", "Usage: `/goal <objective>` — autonomously work through steps to achieve objective.")
                 return
-            chat.add_agent_message("Supervisor", f"🎯 **Autonomous Goal Activated:** `{goal_text}`\n*ScopeForge agents will autonomously plan and execute tools until completion.*")
-            self.run_agent_task(f"Autonomous goal execution: {goal_text}")
+            iterations = max(35, self.max_iterations)
+            chat.add_agent_message(
+                "Supervisor",
+                f"🎯 **Autonomous Goal Activated:** `{goal_text}`\n"
+                f"*ScopeForge agents will autonomously plan and execute tools until completion (up to {iterations} steps).* "
+                "Press <kbd>Ctrl+C</kbd> to halt at any time."
+            )
+            self.run_agent_task(f"Autonomous goal execution: {goal_text}", max_iterations=iterations)
 
         elif action == "/plan":
             plan_text = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
@@ -1006,7 +1026,7 @@ class ScopeForgeTUIApp(App):
         else:
             chat.add_agent_message("Supervisor", f"Unknown command: `{action}`. Type `/help` for available commands.")
 
-    def run_agent_task(self, prompt: str):
+    def run_agent_task(self, prompt: str, max_iterations: Optional[int] = None):
         """Invoke the LangGraph multi-agent system asynchronously."""
         chat = self.query_one(ChatStream)
         chat.add_user_message(prompt)
@@ -1064,6 +1084,7 @@ class ScopeForgeTUIApp(App):
                     history=self.chat_history,
                     forced_agent=forced,
                     on_token=_on_token,
+                    max_iterations=max_iterations or self.max_iterations,
                 )
 
                 if stream_started:

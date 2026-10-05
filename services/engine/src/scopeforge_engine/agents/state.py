@@ -24,3 +24,5 @@ class AgentState(TypedDict, total=False):
     # Explicit routing override from TUI `/agent <name>` (Open Code style).
     # When set, supervisor skips heuristic and delegates directly.
     forced_agent: Optional[str]
+    max_iterations: Optional[int]
+

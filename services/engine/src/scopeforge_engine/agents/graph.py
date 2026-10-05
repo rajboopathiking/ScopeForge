@@ -543,7 +543,7 @@ class MultiAgentSecOpsOrchestrator:
             cb = _stream_callback_var.get()
             try:
                 current_msgs = list(prompt_msgs)
-                max_iterations = 25
+                max_iterations = state.get("max_iterations") or 25
                 iteration = 0
                 response = AIMessage(content="")
 
@@ -1098,6 +1098,7 @@ class MultiAgentSecOpsOrchestrator:
         history: Optional[List[BaseMessage]] = None,
         forced_agent: Optional[str] = None,
         on_token: Optional[Callable[[str, str], None]] = None,
+        max_iterations: int = 25,
     ) -> AgentState:
         """Execute the LangGraph multi-agent pipeline."""
         self.pipeline.middlewares[1].set_mode(mode)  # update ScopeGate mode
@@ -1116,6 +1117,7 @@ class MultiAgentSecOpsOrchestrator:
             "pending_approval": None,
             "next_step": None,
             "forced_agent": forced_agent,
+            "max_iterations": max_iterations,
         }
 
         tok = _stream_callback_var.set(on_token)
