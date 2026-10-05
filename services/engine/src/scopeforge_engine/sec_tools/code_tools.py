@@ -273,25 +273,37 @@ def bash_cli(command: str, timeout: int = 120) -> str:
             }, indent=2)
 
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            start_new_session=True if hasattr(os, "setsid") else False,
         )
+        try:
+            stdout_data, stderr_data = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                try:
+                    os.killpg(os.getpgid(proc.pid), 9)
+                except Exception:
+                    proc.kill()
+            else:
+                proc.kill()
+            stdout_data, stderr_data = proc.communicate()
+            return json.dumps({
+                "error": f"Command timed out after {timeout} seconds: {command}",
+                "command": command,
+                "success": False,
+            }, indent=2)
+
         return json.dumps({
             "command": command,
             "return_code": proc.returncode,
-            "stdout": proc.stdout.strip(),
-            "stderr": proc.stderr.strip(),
+            "stdout": stdout_data.strip() if stdout_data else "",
+            "stderr": stderr_data.strip() if stderr_data else "",
             "success": proc.returncode == 0,
-        }, indent=2)
-    except subprocess.TimeoutExpired:
-        return json.dumps({
-            "error": f"Command timed out after {timeout} seconds: {command}",
-            "command": command,
-            "success": False,
         }, indent=2)
     except Exception as e:
         return json.dumps({

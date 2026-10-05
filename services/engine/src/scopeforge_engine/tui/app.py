@@ -1110,6 +1110,9 @@ class ScopeForgeTUIApp(App):
                         pass
                     else:
                         self.chat_history.extend(new_msgs)
+                        # Automatic sliding-window compaction to prevent token budget blowup across sessions
+                        if len(self.chat_history) > 10:
+                            self.chat_history = self.chat_history[-10:]
 
                 # Update findings in sidebar
                 sidebar = self.query_one(SidebarWidget)
@@ -1270,6 +1273,11 @@ class ScopeForgeTUIApp(App):
 
 
 def main():
+    try:
+        import uvloop
+        uvloop.install()
+    except Exception:
+        pass
     app = ScopeForgeTUIApp()
     app.run()
 

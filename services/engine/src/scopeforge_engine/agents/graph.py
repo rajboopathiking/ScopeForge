@@ -508,7 +508,10 @@ class MultiAgentSecOpsOrchestrator:
                 "and communicate over the A2A bus with `send_a2a_message`.\n"
                 "5. SKILLS & MCP: You can install skills from git repositories with `install_skill`, create skills with `create_skill`, "
                 "and configure MCP servers with `add_mcp_server`.\n"
-                "6. Format code and output in clean markdown with diffs and file paths explicitly specified.\n\n"
+                "6. Format code and output in clean markdown with diffs and file paths explicitly specified.\n"
+                "7. REALISTIC CVSS & THREAT MODELING: Distinguish between active exploitable vulnerabilities and Informational/Hardening defense-in-depth gaps. "
+                "Missing HTTP security headers (CSP, X-Frame-Options, HSTS) or wildcard CORS on public content are LOW/INFORMATIONAL or MEDIUM (CVSS 3.0-5.3), never Critical 9.0+. "
+                "Reserve CRITICAL (CVSS 9.0+) strictly for verified, exploitable risks (unauthenticated RCE, confirmed SQL injection, auth bypass).\n\n"
                 f"{proj_rules}\n{user_prefs}\n{rag_info}\n{skills_info}"
             )
             prompt_msgs = [SystemMessage(content=sys_prompt)] + list(state["messages"][-5:])
