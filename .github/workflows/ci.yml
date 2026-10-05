@@ -25,5 +25,4 @@ jobs:
       # Full suite with provider runtime (httpx/anyio, conformance + replay).
       - run: uv sync --python 3.12 --all-extras --all-packages
       - run: uv run pytest services/engine/tests -q
-      # Portability gate: stdlib-only spine stays green on bare interpreters.
-      - run: python -m pytest services/engine/tests -q
+

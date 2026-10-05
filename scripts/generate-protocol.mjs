@@ -145,7 +145,8 @@ function writeOrCheck(path, content) {
     try {
       current = readFileSync(path, "utf8");
     } catch {}
-    if (current !== content) {
+    const norm = (s) => (typeof s === "string" ? s.replace(/\r\n/g, "\n") : s);
+    if (norm(current) !== norm(content)) {
       console.error(`protocol drift: ${path} differs from schema. Run pnpm generate:protocol`);
       process.exitCode = 1;
     }
