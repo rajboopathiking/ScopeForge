@@ -12,6 +12,7 @@ from textual.widgets import RichLog
 from ..a2a.bus import A2ABus
 from ..a2a.protocol import A2AIntent, A2AMessage
 from ..agents.graph import MultiAgentSecOpsOrchestrator
+from ..config.loader import ScopeGateConfig
 from ..llm_providers.manager import ProviderManager
 from ..mcp_bridge import MCPBridge
 from ..middleware.pipeline import MiddlewarePipeline, create_default_pipeline
@@ -69,8 +70,9 @@ class ScopeForgeTUIApp(App):
         self.a2a_bus = A2ABus()
         self.skill_mgr = SkillManager()
 
+        gate_cfg = ScopeGateConfig.load()
         self.sec_mode = "plan"
-        self.current_scope = ["authorized.example", "*.example.com", "localhost"]
+        self.current_scope = gate_cfg.scopes if gate_cfg.scopes else ["authorized.example", "*.example.com", "localhost"]
         self.pipeline = create_default_pipeline(mode=self.sec_mode, authorized_scopes=self.current_scope)
 
         self.orchestrator = MultiAgentSecOpsOrchestrator(
@@ -392,7 +394,7 @@ class ScopeForgeTUIApp(App):
         elif action == "/mode":
             if len(parts) > 1 and parts[1].lower() in ("plan", "artifacts", "live"):
                 self.sec_mode = parts[1].lower()
-                self.pipeline.middlewares[1].set_mode(self.sec_mode)
+                self.pipeline.set_mode(self.sec_mode)
                 chat.add_agent_message("Supervisor", f"✓ Switched execution mode to **{self.sec_mode.upper()}**.")
                 self._sync_header()
             else:
@@ -854,7 +856,7 @@ class ScopeForgeTUIApp(App):
             if len(parts) > 2 and parts[1].lower() == "add":
                 target = parts[2]
                 self.current_scope.append(target)
-                self.pipeline.middlewares[1].add_scope(target)
+                self.orchestrator.add_authorized_scope(target)
                 chat.add_agent_message("Supervisor", f"🛡 **ScopeGate:** Added `{target}` to authorized scope targets.")
                 self._sync_header()
             else:
@@ -1157,7 +1159,7 @@ class ScopeForgeTUIApp(App):
         modes = ["plan", "artifacts", "live"]
         idx = modes.index(self.sec_mode)
         self.sec_mode = modes[(idx + 1) % len(modes)]
-        self.pipeline.middlewares[1].set_mode(self.sec_mode)
+        self.pipeline.set_mode(self.sec_mode)
         self._sync_header()
         chat = self.query_one(ChatStream)
         chat.add_agent_message("Supervisor", f"🛡 **Execution Mode:** Switched to **{self.sec_mode.upper()}**.")

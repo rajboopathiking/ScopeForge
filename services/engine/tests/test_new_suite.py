@@ -748,5 +748,45 @@ async def test_long_running_goal_and_iterations_config():
         assert any("Autonomous Goal Activated" in msg.get("content", "") for msg in chat.transcript)
         assert any("45 steps" in msg.get("content", "") for msg in chat.transcript)
 
+def test_dynamic_scopegate_and_config_loader(tmp_path):
+    """Verify ScopeGate configuration loading, pipeline helpers, and orchestrator controls."""
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator
+    from scopeforge_engine.config.loader import ScopeGateConfig
+    from scopeforge_engine.middleware.pipeline import create_default_pipeline
+    from scopeforge_engine.middleware.scope_gate import ScopeGateMiddleware
 
+    # 1. Test ScopeGateConfig defaults
+    cfg = ScopeGateConfig()
+    assert cfg.mode == "plan"
+    assert "localhost" in cfg.scopes
 
+    # 2. Test ScopeGateConfig from custom file
+    custom_cfg_file = tmp_path / "scopegate.json"
+    custom_cfg_file.write_text('{"mode": "live", "authorized_scopes": ["test.local", "sec.test"]}')
+    loaded = ScopeGateConfig.load(custom_cfg_file)
+    assert loaded.mode == "live"
+    assert "test.local" in loaded.scopes
+
+    # 3. Test Pipeline and Orchestrator ScopeGate helpers
+    pipeline = create_default_pipeline(mode="plan")
+    gate = pipeline.get_scope_gate()
+    assert isinstance(gate, ScopeGateMiddleware)
+    assert gate.mode == "plan"
+
+    pipeline.set_mode("artifacts")
+    assert gate.mode == "artifacts"
+
+    orchestrator = MultiAgentSecOpsOrchestrator(pipeline=pipeline)
+    assert orchestrator.get_current_mode() == "artifacts"
+
+    orchestrator.set_mode("live")
+    assert orchestrator.get_current_mode() == "live"
+
+    msg = orchestrator.add_authorized_scope("staging.internal.net")
+    assert "staging.internal.net" in msg
+    assert "staging.internal.net" in gate.authorized_scopes
+
+    # Verify default allowlist entries
+    default_gate = ScopeGateMiddleware()
+    assert "thangarasusamayal.vercel.app" in default_gate.authorized_scopes
+    assert "pentest-ground.com" in default_gate.authorized_scopes

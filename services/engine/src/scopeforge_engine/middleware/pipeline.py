@@ -23,6 +23,19 @@ class MiddlewarePipeline:
         self.middlewares.append(middleware)
         self.middlewares.sort(key=lambda m: m.priority)
 
+    def get_scope_gate(self) -> Optional[ScopeGateMiddleware]:
+        """Retrieve the ScopeGate middleware instance if present."""
+        for m in self.middlewares:
+            if isinstance(m, ScopeGateMiddleware):
+                return m
+        return None
+
+    def set_mode(self, mode: str):
+        """Set the execution mode on the ScopeGate middleware."""
+        gate = self.get_scope_gate()
+        if gate:
+            gate.set_mode(mode)
+
     def run_before_llm(self, messages: List[Any], metadata: Dict[str, Any]) -> List[Any]:
         current = messages
         for m in self.middlewares:

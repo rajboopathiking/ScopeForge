@@ -120,6 +120,26 @@ class MultiAgentSecOpsOrchestrator:
 
         self.graph = self._build_graph()
 
+    def set_mode(self, mode: str):
+        """Change the ScopeGate execution mode ('plan', 'artifacts', 'live')."""
+        self.pipeline.set_mode(mode)
+        return f"ScopeGate mode changed to: {mode.upper()}"
+
+    def add_authorized_scope(self, target: str):
+        """Add an authorized target to the ScopeGate allowlist."""
+        gate = self.pipeline.get_scope_gate()
+        if gate:
+            gate.add_scope(target)
+            return f"Added '{target}' to authorized scopes"
+        return "ScopeGate middleware not found"
+
+    def get_current_mode(self) -> str:
+        """Get the current ScopeGate execution mode."""
+        gate = self.pipeline.get_scope_gate()
+        if gate:
+            return gate.mode
+        return "unknown"
+
     def _get_project_instructions(self) -> str:
         """Load project instructions from SCOPEFORGE.md or CLAUDE.md if present."""
         for name in ["SCOPEFORGE.md", "CLAUDE.md", ".scopeforge/instructions.md"]:
