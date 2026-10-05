@@ -121,23 +121,53 @@ ScopeForge features native paste de-duplication and custom endpoint normalizatio
 
 ---
 
-## 🔌 Model Context Protocol (MCP) & Skills
+## ⇄ Agent-to-Agent (A2A) Protocol Bus & Subagents
 
-### MCP Integration:
+ScopeForge implements first-class Agent-to-Agent collaboration inspired by modern autonomous multi-agent architectures:
+
+- **Dynamic Subagent Invocation**: Use `invoke_subagent(agent_name, task)` to delegate tasks to `recon`, `audit`, `exploit`, `report`, or `dev`.
+- **A2A Message Broadcasting**: Use `send_a2a_message(recipient, intent, message)` to broadcast evidence, handovers, and results across the bus.
+- **Interactive Telemetry**:
+  ```text
+  /a2a                                    # View registered agents, bus status, and recent message table
+  /a2a send <agent> <intent> <message>    # Manually dispatch an A2A message
+  /agent <name>                           # Direct next task to a specific specialist agent
+  ```
+
+---
+
+## 🔌 Model Context Protocol (MCP) & Extensible Skills
+
+### Model Context Protocol (MCP):
+ScopeForge connects directly to external MCP servers:
 ```text
-/mcp                                    # List all configured MCP servers
-/mcp tools                              # View all registered MCP tools
-/mcp add <name> <command>               # Add and enable an MCP server
-/mcp enable <name>                      # Enable a server
-/mcp disable <name>                     # Disable a server
+/mcp                                    # List all configured MCP servers & status
+/mcp tools                              # View active tools registered across all MCP servers
+/mcp add <name> <command>               # Add and immediately enable an MCP server
+/mcp remove <name>                      # Remove an MCP server
+/mcp enable <name>                      # Enable an existing server
+/mcp disable <name>                     # Disable an existing server
 ```
+Models can also invoke `add_mcp_server` and `list_mcp_servers` autonomously as LangChain tools.
 
 ### Extensible Skills (`SKILL.md`):
-Install custom skills from any Git repository:
+Install custom domain playbooks and guidelines directly from GitHub:
 ```text
-/skill install https://github.com/example/sec-skills
-/skill list
+/skill install https://github.com/Jakeschincariol/linkedin-agent-skill.git
+/skill add my-playbook [description]    # Create a new custom skill template
+/skill list                             # Discover all available local skills
+/skill <name>                           # Toggle skill activation
 ```
+Skills are automatically cloned, loaded into `.scopeforge/skills/` and `~/.scopeforge/skills/`, and dynamically injected into the model prompt when relevant keywords are triggered.
+
+---
+
+## ⚡ Long-Running Multi-Step Task Execution
+
+Unlike basic wrappers that terminate prematurely after 2-4 tool calls, ScopeForge is built for real developer and security tasks:
+- **Up to 25 Autonomous Iterations**: Run complete multi-step workflows (e.g. cloning a repository, installing skills, writing code, running tests, fixing errors, and auditing) without premature termination.
+- **Graceful Synthesis Safeguard**: If an iteration budget is reached, ScopeForge automatically synthesizes all tool observations and outputs into a coherent, comprehensive final answer rather than cutting off in the middle.
+- **Clean Token Streaming**: Token streaming seamlessly transitions between text generation and tool execution callouts with zero dropped chunks or duplicate messages.
 
 ---
 

@@ -10,7 +10,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import RichLog
 
 from ..a2a.bus import A2ABus
-from ..a2a.protocol import A2AMessage
+from ..a2a.protocol import A2AIntent, A2AMessage
 from ..agents.graph import MultiAgentSecOpsOrchestrator
 from ..llm_providers.manager import ProviderManager
 from ..mcp_bridge import MCPBridge
@@ -437,21 +437,115 @@ class ScopeForgeTUIApp(App):
             else:
                 chat.add_agent_message("Supervisor", "Usage: `/rag <query>` or `/rag ingest <path>`")
 
+        elif action in ("/a2a", "/protocol", "/agents-bus"):
+            tokens = cmd.strip().split()
+            subcmd = tokens[1].lower() if len(tokens) > 1 else ""
+
+            if subcmd == "send" and len(tokens) >= 4:
+                recip = tokens[2]
+                intent_str = tokens[3]
+                msg_body = " ".join(tokens[4:]) if len(tokens) > 4 else "Ping"
+                clean_intent = A2AIntent.TASK_DELEGATION
+                for member in A2AIntent:
+                    if member.name.lower() == intent_str.lower() or member.value.lower() == intent_str.lower():
+                        clean_intent = member
+                        break
+                a2a_msg = self.a2a_bus.send(
+                    sender="Supervisor",
+                    recipient=recip,
+                    intent=clean_intent,
+                    payload={"message": msg_body},
+                )
+                chat.add_a2a_banner("Supervisor", recip, clean_intent.value, msg_body[:60])
+                msg_id_short = (getattr(a2a_msg, "message_id", None) or "a2a_msg")[:8]
+                chat.add_agent_message(
+                    "Supervisor",
+                    f"✓ Dispatched A2A Protocol message `[{msg_id_short}]`:\n"
+                    f"- **Sender:** Supervisor\n"
+                    f"- **Recipient:** {recip}\n"
+                    f"- **Intent:** `{clean_intent.value}`\n"
+                    f"- **Payload:** {msg_body}"
+                )
+            else:
+                history = self.a2a_bus.get_history(10)
+                if history:
+                    table_rows = []
+                    for m in history:
+                        p_summary = json.dumps(m.payload, default=str)
+                        if len(p_summary) > 60:
+                            p_summary = p_summary[:57] + "..."
+                        intent_val = m.intent.value if hasattr(m.intent, 'value') else str(m.intent)
+                        table_rows.append(
+                            f"| `{m.timestamp[:19]}` | **{m.sender}** | **{m.recipient}** | `{intent_val}` | {p_summary} |"
+                        )
+                    history_table = (
+                        "| Timestamp | Sender | Recipient | Intent | Payload |\n"
+                        "|---|---|---|---|---|\n" + "\n".join(table_rows)
+                    )
+                else:
+                    history_table = "*No inter-agent messages recorded yet in this session.*"
+
+                active_team = (
+                    "- **Supervisor**: System coordinator & Claude Code / Open Code general harness\n"
+                    "- **ReconAgent**: Perimeter reconnaissance, port scanning, web surface probing\n"
+                    "- **AuditAgent**: SAST static vulnerability audit, CVE correlation\n"
+                    "- **ExploitAgent**: Falsifiable PoC verification, evidence integrity\n"
+                    "- **ReportAgent**: Executive SecOps synthesis and CVSS remediation\n"
+                    "- **DevAgent**: Local code modification, git workflows, sandbox bash execution, skill installer"
+                )
+
+                chat.add_agent_message(
+                    "Supervisor",
+                    f"### ⇄ ScopeForge Agent-to-Agent (A2A) Protocol Bus\n\n"
+                    f"**Active Registered Agent Team:**\n{active_team}\n\n"
+                    f"**Recent Telemetry & Handover History ({len(history)} messages):**\n\n"
+                    f"{history_table}\n\n"
+                    f"*Commands: `/a2a send <recipient> <intent> <message>` to broadcast or `/agent <name>` to direct.*"
+                )
+
         elif action == "/wiki":
             self.action_open_wiki()
 
         elif action in ("/skill", "/skills"):
-            if len(parts) > 1 and parts[1].lower() in ("install", "clone", "add"):
+            if len(parts) > 1 and parts[1].lower() in ("install", "clone"):
                 if len(parts) > 2:
                     repo_url = parts[2].strip()
                     chat.add_agent_message("Supervisor", f"📦 Installing skill from `{repo_url}`...")
                     ok, msg, installed = self.skill_mgr.install_skill_from_repo(repo_url)
                     if ok:
-                        chat.add_agent_message("Supervisor", f"✓ {msg}\n\nType `/skill list` to see all skills or `/skill <name>` to toggle.")
+                        for s in installed:
+                            self.skill_mgr.activate_skill(s)
+                        chat.add_agent_message("Supervisor", f"✓ {msg}\n\nSkills are activated! Type `/skill list` to view all skills or `/skill <name>` to toggle.")
                     else:
                         chat.add_agent_message("Supervisor", f"❌ Skill installation failed: {msg}")
                 else:
                     chat.add_agent_message("Supervisor", "Usage: `/skill install <git-url>` (e.g. `/skill install https://github.com/Jakeschincariol/linkedin-agent-skill.git`)")
+            elif len(parts) > 1 and parts[1].lower() in ("create", "add"):
+                if len(parts) > 2:
+                    s_arg = parts[2].strip()
+                    if s_arg.startswith("http://") or s_arg.startswith("https://") or "github.com" in s_arg:
+                        chat.add_agent_message("Supervisor", f"📦 Installing skill from `{s_arg}`...")
+                        ok, msg, installed = self.skill_mgr.install_skill_from_repo(s_arg)
+                        if ok:
+                            for s in installed:
+                                self.skill_mgr.activate_skill(s)
+                            chat.add_agent_message("Supervisor", f"✓ {msg}\n\nSkills are activated!")
+                        else:
+                            chat.add_agent_message("Supervisor", f"❌ Skill installation failed: {msg}")
+                    else:
+                        skill_tokens = parts[2].split(maxsplit=1)
+                        s_name = skill_tokens[0].strip()
+                        desc = skill_tokens[1].strip() if len(skill_tokens) > 1 else f"Custom playbook for {s_name}"
+                        created = self.skill_mgr.create_skill(
+                            name=s_name,
+                            description=desc,
+                            triggers=[s_name],
+                            instructions=f"### {s_name} Custom Playbook\n\n1. Follow best practices for {s_name}.\n2. Document findings in `.scopeforge/evidence/`.",
+                        )
+                        self.skill_mgr.activate_skill(s_name)
+                        chat.add_agent_message("Supervisor", f"✓ Created & activated custom skill: **[{created.name}]** (`{created.path}`)")
+                else:
+                    chat.add_agent_message("Supervisor", "Usage: `/skill add <name> [description]` or `/skill install <url>`")
             elif len(parts) > 1 and parts[1].lower() != "list":
                 skill_name = parts[1].lower()
                 if self.skill_mgr.get_skill(skill_name):
@@ -468,7 +562,7 @@ class ScopeForgeTUIApp(App):
                     f"- **[{s.name}]**: {s.description}\n  *Triggers:* `{', '.join(s.triggers)}` | *Status:* {'[ACTIVE]' if s.name in self.skill_mgr.active_skills else '[AVAILABLE]'}"
                     for s in self.skill_mgr.list_skills()
                 )
-                chat.add_agent_message("Supervisor", f"🧠 **Discovered Agent Skills (`.scopeforge/skills/`):**\n\n{skills_list}\n\n*Type `/skill <name>` to toggle activation or `/skill install <git-url>` to install new skills.*")
+                chat.add_agent_message("Supervisor", f"🧠 **Discovered Agent Skills (`.scopeforge/skills/`):**\n\n{skills_list}\n\n*Commands: `/skill <name>` to toggle, `/skill install <git-url>` to install, `/skill add <name> [desc]` to create.*")
 
         elif action == "/mcp":
             if len(parts) > 2 and parts[1].lower() == "add":
@@ -488,6 +582,13 @@ class ScopeForgeTUIApp(App):
                         chat.add_agent_message("Supervisor", f"❌ Error adding MCP server: {e}")
                 else:
                     chat.add_agent_message("Supervisor", "Usage: `/mcp add <name> <command>`")
+            elif len(parts) > 2 and parts[1].lower() in ("remove", "delete", "del", "rm"):
+                srv_name = parts[2].strip()
+                try:
+                    self.mcp.registry.remove_server(srv_name)
+                    chat.add_agent_message("Supervisor", f"✓ Removed MCP server: **{srv_name}**")
+                except Exception as e:
+                    chat.add_agent_message("Supervisor", f"❌ Error removing MCP server: {e}")
             elif len(parts) > 2 and parts[1].lower() == "enable":
                 srv_name = parts[2].strip()
                 try:
@@ -512,7 +613,7 @@ class ScopeForgeTUIApp(App):
             else:
                 servers = self.mcp.list_servers()
                 s_list = "\n".join(f"- **{s['name']}**: {'[ENABLED]' if s['enabled'] else '[DISABLED]'} (`{s['command']}`)" for s in servers)
-                chat.add_agent_message("Supervisor", f"🔌 **Model Context Protocol (MCP) Servers:**\n\n{s_list}\n\n*Commands: `/mcp add <name> <cmd>`, `/mcp enable <name>`, `/mcp disable <name>`, `/mcp tools`*")
+                chat.add_agent_message("Supervisor", f"🔌 **Model Context Protocol (MCP) Servers:**\n\n{s_list}\n\n*Commands: `/mcp add <name> <cmd>`, `/mcp remove <name>`, `/mcp enable <name>`, `/mcp disable <name>`, `/mcp tools`*")
 
         elif action in ("/search", "/web", "/google"):
             query_str = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
@@ -923,24 +1024,37 @@ class ScopeForgeTUIApp(App):
             header = self.query_one(HeaderBar)
             header.active_agent = forced or "Supervisor"
             stream_started = False
+            has_streamed_any_text = False
 
             def _on_token(agent: str, chunk: str):
-                nonlocal stream_started
+                nonlocal stream_started, has_streamed_any_text
                 if isinstance(chunk, str) and chunk.startswith('{"__type__":'):
                     try:
                         data = json.loads(chunk)
                         if data.get("__type__") == "tool_call":
                             chat.add_tool_call(data.get("name", ""), data.get("args", {}), "RUNNING")
+                            stream_started = False
                             return
                         elif data.get("__type__") == "tool_result":
                             chat.add_tool_result(data.get("name", ""), data.get("result", ""), "SUCCESS")
+                            stream_started = False
+                            return
+                        elif data.get("__type__") == "a2a_banner":
+                            chat.add_a2a_banner(
+                                data.get("sender", "Supervisor"),
+                                data.get("recipient", "DevAgent"),
+                                data.get("intent", "TASK_DELEGATION"),
+                                data.get("preview", ""),
+                            )
+                            stream_started = False
                             return
                     except Exception:
                         pass
                 if not stream_started:
                     chat.start_agent_stream(agent)
                     stream_started = True
-                chat.append_agent_chunk(chunk)
+                has_streamed_any_text = True
+                chat.append_agent_chunk(chunk, agent=agent)
 
             try:
                 state = await self.orchestrator.run(
@@ -962,7 +1076,7 @@ class ScopeForgeTUIApp(App):
                 if state.get("messages"):
                     last_msg = state["messages"][-1]
                     clean_content = str(last_msg.content)
-                    if not stream_started:
+                    if not has_streamed_any_text:
                         chat.add_agent_message(active_agent, clean_content)
                     else:
                         chat.last_agent_response = clean_content

@@ -584,3 +584,91 @@ def test_clipboard_duplicate_paste_prevention():
     assert inp._is_duplicate_paste("my-api-key") is False
     # Immediate second paste of same text within 450ms is detected as duplicate
     assert inp._is_duplicate_paste("my-api-key") is True
+
+
+def test_orchestrator_subagent_and_a2a_tools():
+    orchestrator = MultiAgentSecOpsOrchestrator()
+    tools = orchestrator._get_orchestrator_tools()
+    tool_map = {t.name: t for t in tools}
+
+    assert "invoke_subagent" in tool_map
+    assert "send_a2a_message" in tool_map
+    assert "install_skill" in tool_map
+    assert "create_skill" in tool_map
+    assert "list_skills" in tool_map
+    assert "add_mcp_server" in tool_map
+    assert "list_mcp_servers" in tool_map
+
+    # Test invoke_subagent for recon
+    recon_res = tool_map["invoke_subagent"].invoke({"agent_name": "recon", "task": "scan scanme.org"})
+    assert "[ReconAgent Results" in recon_res
+    history = orchestrator.a2a_bus.get_history(5)
+    assert any(m.sender == "Supervisor" and m.recipient == "ReconAgent" for m in history)
+    assert any(m.sender == "ReconAgent" and m.recipient == "Supervisor" for m in history)
+
+    # Test invoke_subagent for dev
+    dev_res = tool_map["invoke_subagent"].invoke({"agent_name": "dev", "task": "run command echo 'agent harness test'"})
+    assert "agent harness test" in dev_res
+
+    # Test send_a2a_message
+    msg_res = json.loads(tool_map["send_a2a_message"].invoke({
+        "recipient": "AuditAgent",
+        "intent": "EVIDENCE_SHARING",
+        "message": "Found potential SQL injection in parameter id",
+    }))
+    assert msg_res["status"] == "SENT"
+    assert msg_res["recipient"] == "AuditAgent"
+    assert msg_res["intent"] == "EVIDENCE_SHARING"
+
+    # Test create_skill and list_skills
+    created_res = json.loads(tool_map["create_skill"].invoke({
+        "name": "test-secops-playbook",
+        "description": "Automated security triage playbook",
+        "triggers": "triage,secops,playbook",
+        "instructions": "Follow triage steps 1 to 4.",
+    }))
+    assert created_res["success"] is True
+    assert created_res["skill"] == "test-secops-playbook"
+
+    skills_res = json.loads(tool_map["list_skills"].invoke({}))
+    assert skills_res["skills_count"] >= 1
+    skill_names = [s["name"] for s in skills_res["skills"]]
+    assert "test-secops-playbook" in skill_names
+
+    # Test add_mcp_server and list_mcp_servers
+    mcp_add_res = json.loads(tool_map["add_mcp_server"].invoke({
+        "name": "test-audit-server",
+        "command": "python -m test_mcp",
+    }))
+    assert mcp_add_res["status"] == "SUCCESS"
+
+    mcp_list_res = json.loads(tool_map["list_mcp_servers"].invoke({}))
+    srv_names = [s["name"] for s in mcp_list_res["servers"]]
+    assert "test-audit-server" in srv_names
+
+
+@pytest.mark.asyncio
+async def test_tui_slash_a2a_and_skill_commands():
+    from scopeforge_engine.tui.app import ScopeForgeTUIApp
+    from scopeforge_engine.tui.widgets.chat_log import ChatStream
+
+    app = ScopeForgeTUIApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatStream)
+
+        # 1. Test /a2a command
+        app.execute_slash_command("/a2a")
+        assert "Agent-to-Agent (A2A) Protocol Bus" in chat.last_agent_response
+
+        # 2. Test /a2a send command
+        app.execute_slash_command("/a2a send DevAgent TASK_DELEGATION Run automated tests")
+        assert "Dispatched A2A Protocol message" in chat.last_agent_response
+
+        # 3. Test /skill add command
+        app.execute_slash_command("/skill add cloud-hardening Hardening AWS & GCP infrastructure")
+        assert "Created & activated custom skill: **[cloud-hardening]**" in chat.last_agent_response
+
+        # 4. Test /mcp remove command
+        app.execute_slash_command("/mcp remove test-audit-server")
+        assert "Removed MCP server" in chat.last_agent_response
+

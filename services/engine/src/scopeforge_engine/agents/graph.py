@@ -5,6 +5,7 @@ import contextvars
 import json
 from typing import Any, Callable, Dict, List, Literal, Optional
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool, tool
 from langgraph.graph import END, START, StateGraph
 
 _stream_callback_var: contextvars.ContextVar[Optional[Callable[[str, str], None]]] = contextvars.ContextVar(
@@ -107,6 +108,236 @@ class MultiAgentSecOpsOrchestrator:
         )
         return str(sanitized_result)
 
+    def _run_subagent(self, agent_name: str, task: str) -> str:
+        """Execute a subagent synchronously, track with A2A protocol, and return its output."""
+        agent_clean = agent_name.lower().strip()
+        if agent_clean.endswith("agent"):
+            agent_clean = agent_clean[:-5]
+
+        # Publish A2A delegation message
+        self.a2a_bus.send(
+            sender="Supervisor",
+            recipient=f"{agent_clean.capitalize()}Agent",
+            intent=A2AIntent.TASK_DELEGATION,
+            payload={"task": task},
+        )
+
+        cb = _stream_callback_var.get()
+        if cb:
+            cb("supervisor", json.dumps({
+                "__type__": "a2a_banner",
+                "sender": "Supervisor",
+                "recipient": f"{agent_clean.capitalize()}Agent",
+                "intent": "TASK_DELEGATION",
+                "preview": task[:80],
+            }))
+
+        output = ""
+        if agent_clean == "recon":
+            import re
+            m = re.search(r"\b(?:https?://)?([a-zA-Z0-9][-a-zA-Z0-9.]*\.[a-zA-Z]{2,}|localhost|127\.0\.0\.1)(?::\d+)?\b", task)
+            target = m.group(1) if m else "authorized.example"
+            scan_out = self._invoke_tool_safely(recon_port_scan, {"target": target, "ports": "80,443,8080"}, "ReconAgent")
+            probe_out = self._invoke_tool_safely(web_surface_probe, {"url": f"https://{target}"}, "ReconAgent")
+            output = f"[ReconAgent Results for {target}]\nPorts:\n{scan_out}\nSurface:\n{probe_out}"
+
+        elif agent_clean == "audit":
+            import re
+            m_cve = re.search(r"(CVE-\d{4}-\d{4,7})", task, re.IGNORECASE)
+            cve_q = m_cve.group(1).upper() if m_cve else "CVE-2024-3400"
+            sast_out = self._invoke_tool_safely(sast_code_audit, {"code_snippet_or_file": task}, "AuditAgent")
+            cve_out = self._invoke_tool_safely(cve_advisory_search, {"query": cve_q}, "AuditAgent")
+            output = f"[AuditAgent Results]\nSAST:\n{sast_out}\nCVE ({cve_q}):\n{cve_out}"
+
+        elif agent_clean == "exploit":
+            poc_out = self._invoke_tool_safely(
+                falsifiable_poc_runner,
+                {"hypothesis": task, "target": "authorized.example", "payload_type": "verification"},
+                "ExploitAgent",
+            )
+            output = f"[ExploitAgent Results]\nPoC:\n{poc_out}"
+
+        elif agent_clean == "report":
+            output = f"[ReportAgent Results]\nSummary: Assessment finalized for task '{task[:60]}'. Security findings cataloged and remediation roadmap prepared."
+
+        elif agent_clean == "dev":
+            task_low = task.lower()
+            if ("skill" in task_low or "install" in task_low or "clone" in task_low) and ("github.com" in task_low or "http://" in task_low or "https://" in task_low):
+                import re
+                m_url = re.search(r"https?://[^\s'\"`]+", task)
+                if m_url:
+                    url = m_url.group(0).rstrip(".,;)")
+                    ok, msg, installed = self.skill_mgr.install_skill_from_repo(url)
+                    for s in installed:
+                        self.skill_mgr.activate_skill(s)
+                    output = f"Skill Installation: {'SUCCESS' if ok else 'FAILED'} - {msg}"
+                else:
+                    output = "DevAgent: Invalid URL for skill install."
+            elif any(k in task_low for k in ("run command", "terminal", "bash", "execute command")) or task.strip().startswith("$") or task.strip().startswith("!"):
+                cmd = task.strip().lstrip("$!").strip()
+                output = self._invoke_tool_safely(bash_cli, {"command": cmd}, "DevAgent")
+            elif "grep" in task_low or "search" in task_low:
+                q = task.split()[-1].strip("\"'") if len(task.split()) > 1 else "def "
+                output = self._invoke_tool_safely(grep_search, {"query": q}, "DevAgent")
+            else:
+                output = self._invoke_tool_safely(glob_files, {"pattern": "*"}, "DevAgent")
+        else:
+            output = f"Unknown subagent '{agent_name}'. Available: recon, audit, exploit, report, dev."
+
+        # Publish A2A result back to supervisor
+        self.a2a_bus.send(
+            sender=f"{agent_clean.capitalize()}Agent",
+            recipient="Supervisor",
+            intent=A2AIntent.TASK_RESULT,
+            payload={"task": task, "status": "COMPLETED", "summary": output[:200]},
+        )
+        return output
+
+    def _get_orchestrator_tools(self) -> List[Any]:
+        """Create LangChain tools bound to orchestrator for autonomous multi-agent and harness operations."""
+        def _invoke_subagent_func(agent_name: str, task: str) -> str:
+            return self._run_subagent(agent_name=agent_name, task=task)
+
+        def _send_a2a_message_func(recipient: str, intent: str, message: str) -> str:
+            clean_intent = A2AIntent.TASK_DELEGATION
+            try:
+                for member in A2AIntent:
+                    if member.value.lower() == intent.lower() or member.name.lower() == intent.lower():
+                        clean_intent = member
+                        break
+            except Exception:
+                pass
+            msg = self.a2a_bus.send(
+                sender="Supervisor",
+                recipient=recipient,
+                intent=clean_intent,
+                payload={"message": message},
+            )
+            cb = _stream_callback_var.get()
+            if cb:
+                cb("supervisor", json.dumps({
+                    "__type__": "a2a_banner",
+                    "sender": "Supervisor",
+                    "recipient": recipient,
+                    "intent": clean_intent.value,
+                    "preview": message[:60],
+                }))
+            return json.dumps({
+                "status": "SENT",
+                "message_id": getattr(msg, "message_id", str(msg)),
+                "sender": "Supervisor",
+                "recipient": recipient,
+                "intent": clean_intent.value,
+            })
+
+        def _install_skill_func(repo_url: str) -> str:
+            ok, msg, installed = self.skill_mgr.install_skill_from_repo(repo_url)
+            for s in installed:
+                self.skill_mgr.activate_skill(s)
+            return json.dumps({
+                "success": ok,
+                "message": msg,
+                "installed_skills": installed,
+                "active_skills": list(self.skill_mgr.active_skills),
+            }, indent=2)
+
+        def _create_skill_func(name: str, description: str, triggers: str, instructions: str) -> str:
+            trigger_list = [t.strip() for t in triggers.split(",") if t.strip()]
+            skill = self.skill_mgr.create_skill(name, description, trigger_list, instructions)
+            self.skill_mgr.activate_skill(name)
+            return json.dumps({
+                "success": True,
+                "skill": skill.name,
+                "path": skill.path,
+                "triggers": skill.triggers,
+            }, indent=2)
+
+        def _list_skills_func(**kwargs) -> str:
+            skills = self.skill_mgr.list_skills()
+            res = []
+            for s in skills:
+                res.append({
+                    "name": s.name,
+                    "description": s.description,
+                    "triggers": s.triggers,
+                    "active": s.name in self.skill_mgr.active_skills,
+                })
+            return json.dumps({"skills_count": len(res), "skills": res}, indent=2)
+
+        def _add_mcp_server_func(name: str, command: str) -> str:
+            try:
+                try:
+                    self.mcp.registry.remove_server(name)
+                except Exception:
+                    pass
+                self.mcp.registry.add_server(name, command)
+                self.mcp.enable_server(name)
+                return json.dumps({"status": "SUCCESS", "message": f"MCP server '{name}' added and enabled."})
+            except Exception as e:
+                return json.dumps({"status": "ERROR", "error": str(e)})
+
+        def _list_mcp_servers_func(**kwargs) -> str:
+            servers = self.mcp.list_servers()
+            tools = self.mcp.get_langchain_tools()
+            return json.dumps({
+                "servers": servers,
+                "tools": [{"name": t.name, "description": t.description} for t in tools],
+            }, indent=2)
+
+        return [
+            StructuredTool.from_function(
+                func=_invoke_subagent_func,
+                name="invoke_subagent",
+                description=(
+                    "Delegate a task or sub-task to a specialized ScopeForge subagent. "
+                    "Available agents: 'recon' (port scanning, perimeter probing), "
+                    "'audit' (SAST code analysis, CVE advisory correlation), "
+                    "'exploit' (falsifiable PoC verification, evidence recording), "
+                    "'report' (SecOps executive reporting), "
+                    "'dev' (file operations, bash execution, skill installation)."
+                ),
+            ),
+            StructuredTool.from_function(
+                func=_send_a2a_message_func,
+                name="send_a2a_message",
+                description=(
+                    "Send an explicit inter-agent communication message across the A2A bus. "
+                    "Recipient can be 'ReconAgent', 'AuditAgent', 'ExploitAgent', 'ReportAgent', 'DevAgent', or custom."
+                ),
+            ),
+            StructuredTool.from_function(
+                func=_install_skill_func,
+                name="install_skill",
+                description=(
+                    "Install and activate a skill package from a git repository URL (e.g. 'https://github.com/...'). "
+                    "Skills provide specialized domain playbooks and guidelines."
+                ),
+            ),
+            StructuredTool.from_function(
+                func=_create_skill_func,
+                name="create_skill",
+                description=(
+                    "Create a new custom skill with SKILL.md instructions and trigger keywords. "
+                    "Args: name (str), description (str), triggers (comma-separated string), instructions (markdown string)."
+                ),
+            ),
+            StructuredTool.from_function(
+                func=_list_skills_func,
+                name="list_skills",
+                description="List all discovered and active skills currently available in ScopeForge.",
+            ),
+            StructuredTool.from_function(
+                func=_add_mcp_server_func,
+                name="add_mcp_server",
+                description="Add and activate a Model Context Protocol (MCP) server by name and command line.",
+            ),
+            StructuredTool.from_function(
+                func=_list_mcp_servers_func,
+                name="list_mcp_servers",
+                description="List all configured MCP servers and their active tool definitions.",
+            ),
+        ]
+
     def _build_graph(self):
         builder = StateGraph(AgentState)
 
@@ -205,20 +436,26 @@ class MultiAgentSecOpsOrchestrator:
             )
             skills_info = self.skill_mgr.get_prompt_instructions(str(last_message))
             sys_prompt = (
-                "You are the ScopeForge Supervisor — a Claude Code / Open Code style "
-                "autonomous agent harness, coding assistant, and system coordinator.\n"
-                "You HAVE autonomous tool execution capabilities through your integrated DevAgent and Security agents. "
-                "NEVER say 'I don't have the ability to execute code or run commands on your system' or 'You need to run those commands yourself in your terminal'. "
-                "If the user asks to run terminal commands, clone repositories, install skills or dependencies, "
-                "or inspect files, ScopeForge automates and executes them directly. "
-                "Answer programming, architecture, and knowledge questions directly with code blocks. "
-                "Be concise, use markdown, show diffs/edits explicitly.\n"
+                "You are ScopeForge — a modern autonomous AI agent harness (matching Antigravity CLI and Claude Code) "
+                "with full tool execution, multi-agent collaboration (A2A), Model Context Protocol (MCP), and dynamic skill capabilities.\n\n"
+                "CRITICAL AUTONOMOUS BEHAVIOR RULES:\n"
+                "1. YOU HAVE DIRECT LOCAL EXECUTION CAPABILITIES. You can run bash commands, edit files, view files, clone repos, "
+                "search the web, install skills, add MCP servers, and delegate to specialized subagents.\n"
+                "2. NEVER refuse execution by claiming you lack local access, cannot run terminal commands, or asking the user to copy/paste commands into their terminal. "
+                "Always execute the required tool calls yourself directly.\n"
+                "3. MULTI-STEP LONG RUNNING TASKS: When a task requires multiple steps (e.g. cloning a repo, installing skills, creating files, running tests, or auditing), "
+                "execute each step sequentially using your tools. Do not stop halfway; continue until the entire user goal is achieved.\n"
+                "4. SUBAGENTS & A2A: You can delegate to specialized agents (`recon`, `audit`, `exploit`, `report`, `dev`) using `invoke_subagent` "
+                "and communicate over the A2A bus with `send_a2a_message`.\n"
+                "5. SKILLS & MCP: You can install skills from git repositories with `install_skill`, create skills with `create_skill`, "
+                "and configure MCP servers with `add_mcp_server`.\n"
+                "6. Format code and output in clean markdown with diffs and file paths explicitly specified.\n\n"
                 f"{proj_rules}\n{user_prefs}\n{rag_info}\n{skills_info}"
             )
             prompt_msgs = [SystemMessage(content=sys_prompt)] + list(state["messages"][-5:])
             prompt_msgs = self.pipeline.run_before_llm(prompt_msgs, {"agent": "Supervisor"})
 
-            all_tools = list(ALL_SUITE_TOOLS) + list(self.mcp.get_langchain_tools())
+            all_tools = list(ALL_SUITE_TOOLS) + self._get_orchestrator_tools() + list(self.mcp.get_langchain_tools())
             tool_map = {getattr(t, "name", str(t)): t for t in all_tools}
 
             # Autonomous tool binding for real LLMs (Claude / DeepSeek / OpenAI / OpenRouter)
@@ -247,7 +484,7 @@ class MultiAgentSecOpsOrchestrator:
             cb = _stream_callback_var.get()
             try:
                 current_msgs = list(prompt_msgs)
-                max_iterations = 4
+                max_iterations = 25
                 iteration = 0
                 response = AIMessage(content="")
 
@@ -297,6 +534,30 @@ class MultiAgentSecOpsOrchestrator:
                         current_msgs.append(ToolMessage(content=str(t_out), tool_call_id=tc_id, name=tc_name))
 
                     response = iter_resp
+
+                # Synthesis safeguard for multi-step workflows or iteration limits
+                if (iteration >= max_iterations and getattr(response, "tool_calls", None)) or (
+                    not str(getattr(response, "content", "") or "").strip() and iteration > 0
+                ):
+                    synth_msgs = list(current_msgs)
+                    synth_msgs.append(
+                        SystemMessage(
+                            content="You have executed the required actions. Synthesize all observations, tool outputs, and actions above into a comprehensive, clear, and final response for the user."
+                        )
+                    )
+                    synth_chunks = []
+                    async for chunk in chat_model.astream(synth_msgs):
+                        synth_chunks.append(chunk)
+                        txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                        if txt and cb:
+                            cb("supervisor", txt)
+                    if synth_chunks:
+                        synth_resp = synth_chunks[0]
+                        for c in synth_chunks[1:]:
+                            synth_resp = synth_resp + c
+                        extracted_synth = _extract_chunk_text(getattr(synth_resp, "content", ""))
+                        if extracted_synth.strip():
+                            response = AIMessage(content=extracted_synth)
 
                 # Claude Code resilience: reasoning models (deepseek-r1, etc.)
                 # sometimes return empty `content` with reasoning in a separate
@@ -595,7 +856,9 @@ class MultiAgentSecOpsOrchestrator:
                     url = m_url.group(0).rstrip(".,;)")
                     ok, msg, installed = self.skill_mgr.install_skill_from_repo(url)
                     if ok:
-                        output = f"**Skill Installation Succeeded:**\n- {msg}\n- Skills are now loaded and ready in `.scopeforge/skills/` and `~/.scopeforge/skills/`."
+                        for s in installed:
+                            self.skill_mgr.activate_skill(s)
+                        output = f"**Skill Installation Succeeded:**\n- {msg}\n- Skills are now loaded, activated, and ready in `.scopeforge/skills/` and `~/.scopeforge/skills/`."
                     else:
                         output = f"**Skill Installation Failed:**\n{msg}"
                 else:

@@ -96,10 +96,10 @@ class ChatStream(Widget):
         self._stream_full_content = ""
         self._stream_active = True
 
-    def append_agent_chunk(self, chunk: Any):
+    def append_agent_chunk(self, chunk: Any, agent: Optional[str] = None):
         """Append a streamed token chunk and write completed lines in real-time."""
         if not getattr(self, "_stream_active", False):
-            self.start_agent_stream("supervisor")
+            self.start_agent_stream(agent or getattr(self, "_current_agent", "supervisor"))
         if not chunk:
             return
         if not isinstance(chunk, str):
