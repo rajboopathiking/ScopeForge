@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureHome, homeDir, readConfig } from "../../apps/terminal/src/home.js";
 import {
@@ -22,7 +22,7 @@ describe("home + config", () => {
   it("resolves SCOPEFORGE_HOME, scaffolds, reads defaults", () => {
     const home = join(tmp(), ".scopeforge");
     expect(homeDir("/x", { SCOPEFORGE_HOME: home })).toBe(home);
-    expect(homeDir("/x", {})).toBe("/x/.scopeforge");
+    expect(homeDir("/x", {})).toBe(join(resolve("/x"), ".scopeforge"));
     ensureHome(home);
     expect(readConfig(home).theme).toBe("default");
   });
