@@ -672,3 +672,52 @@ async def test_tui_slash_a2a_and_skill_commands():
         app.execute_slash_command("/mcp remove test-audit-server")
         assert "Removed MCP server" in chat.last_agent_response
 
+
+def test_context_compaction_and_tool_capping():
+    """Verify context compaction for long-running workflows and tool output truncation safeguards."""
+    import inspect
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator, _compact_context
+    from scopeforge_engine.sec_tools import bash_cli
+
+    # 1. Test _compact_context with 22 messages
+    msgs = [
+        SystemMessage(content="You are ScopeForge orchestrator."),
+        HumanMessage(content="Audit the codebase and run multi-step tool verification."),
+    ]
+    for i in range(10):
+        msgs.append(AIMessage(content="", tool_calls=[{"name": "bash_cli", "args": {"command": f"echo {i}"}, "id": f"call_{i}"}]))
+        msgs.append(ToolMessage(content=f"Output {i}", tool_call_id=f"call_{i}", name="bash_cli"))
+
+    assert len(msgs) == 22
+    compacted = _compact_context(msgs, max_messages=12)
+    assert len(compacted) < len(msgs)
+    assert isinstance(compacted[0], SystemMessage)
+    assert "orchestrator" in compacted[0].content
+    assert isinstance(compacted[1], HumanMessage)
+    assert "Audit the codebase" in compacted[1].content
+    # Check that a summary message is present
+    assert any("[ScopeForge Context Compactor:" in str(m.content) for m in compacted)
+    # Check that no orphaned ToolMessage exists without preceding AIMessage
+    for idx, m in enumerate(compacted):
+        if isinstance(m, ToolMessage):
+            assert idx > 0 and isinstance(compacted[idx - 1], (AIMessage, ToolMessage))
+
+    # 2. Test tool output capping in _invoke_tool_safely
+    orchestrator = MultiAgentSecOpsOrchestrator()
+    class HugeOutputTool:
+        name = "huge_tool"
+        def invoke(self, args):
+            return "A" * 15000 + "MIDDLE_TEXT" + "Z" * 15000
+
+    huge_out = orchestrator._invoke_tool_safely(HugeOutputTool(), {}, "TestAgent")
+    assert len(huge_out) < 20000
+    assert "ScopeForge Context Window Safeguard" in huge_out
+    assert huge_out.startswith("A" * 100)
+    assert huge_out.endswith("Z" * 100)
+
+    # 3. Test bash_cli default timeout is 120s
+    sig = inspect.signature(bash_cli.func if hasattr(bash_cli, "func") else bash_cli)
+    assert sig.parameters["timeout"].default == 120
+
+

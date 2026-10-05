@@ -257,11 +257,11 @@ def git_commit_tool(message: str) -> str:
 
 
 @tool
-def bash_cli(command: str, timeout: int = 30) -> str:
+def bash_cli(command: str, timeout: int = 120) -> str:
     """Execute a bash / terminal command in the workspace directory.
     Args:
         command: The terminal command line string to execute.
-        timeout: Execution timeout in seconds (default 30).
+        timeout: Execution timeout in seconds (default 120).
     """
     forbidden_patterns = ["rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:", "chmod -R 777 /"]
     for fb in forbidden_patterns:

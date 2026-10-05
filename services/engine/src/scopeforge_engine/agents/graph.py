@@ -1,6 +1,7 @@
 """LangGraph Multi-Agent Orchestration Network for ScopeForge."""
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 from typing import Any, Callable, Dict, List, Literal, Optional
@@ -11,6 +12,52 @@ from langgraph.graph import END, START, StateGraph
 _stream_callback_var: contextvars.ContextVar[Optional[Callable[[str, str], None]]] = contextvars.ContextVar(
     "_stream_callback_var", default=None
 )
+
+
+def _compact_context(messages: List[BaseMessage], max_messages: int = 18) -> List[BaseMessage]:
+    """Preserves SystemMessage and initial user goal while compacting intermediate tool turns.
+
+    Ensures OpenAI/Anthropic tool-calling protocol validity:
+    - Never leaves an orphaned ToolMessage without its parent AIMessage(tool_calls).
+    - Never leaves an AIMessage(tool_calls) without its corresponding ToolMessages.
+    """
+    if len(messages) <= max_messages:
+        return messages
+
+    header_msgs: List[BaseMessage] = []
+    rest_msgs: List[BaseMessage] = []
+    for i, m in enumerate(messages):
+        if i == 0 and isinstance(m, SystemMessage):
+            header_msgs.append(m)
+        elif len(header_msgs) == 1 and isinstance(m, HumanMessage):
+            header_msgs.append(m)
+        else:
+            rest_msgs.append(m)
+
+    if not header_msgs:
+        header_msgs = messages[:1]
+        rest_msgs = messages[1:]
+
+    tail_target = max(6, max_messages - len(header_msgs) - 1)
+    if len(rest_msgs) <= tail_target:
+        return messages
+
+    cut_idx = len(rest_msgs) - tail_target
+    while cut_idx < len(rest_msgs) and isinstance(rest_msgs[cut_idx], ToolMessage):
+        cut_idx += 1
+
+    if cut_idx >= len(rest_msgs) - 2:
+        return messages
+
+    pruned_count = cut_idx
+    summary_msg = SystemMessage(
+        content=(
+            f"[ScopeForge Context Compactor: {pruned_count} earlier intermediate execution steps "
+            f"were compacted to preserve token limits for long-running workflows.]"
+        )
+    )
+
+    return header_msgs + [summary_msg] + rest_msgs[cut_idx:]
 
 from pathlib import Path
 from ..a2a.bus import A2ABus
@@ -106,7 +153,19 @@ class MultiAgentSecOpsOrchestrator:
             result=raw_result,
             metadata={"agent": agent_name},
         )
-        return str(sanitized_result)
+        out_str = str(sanitized_result)
+        # Cap tool output size to prevent blowing up the LLM context window!
+        MAX_TOOL_CHARS = 12000
+        HEAD_CHARS = 8000
+        TAIL_CHARS = 3000
+        if len(out_str) > MAX_TOOL_CHARS:
+            omitted = len(out_str) - HEAD_CHARS - TAIL_CHARS
+            out_str = (
+                f"{out_str[:HEAD_CHARS]}\n\n"
+                f"... [ScopeForge Context Window Safeguard: {omitted} characters truncated to avoid token overflow] ...\n\n"
+                f"{out_str[-TAIL_CHARS:]}"
+            )
+        return out_str
 
     def _run_subagent(self, agent_name: str, task: str) -> str:
         """Execute a subagent synchronously, track with A2A protocol, and return its output."""
@@ -489,6 +548,9 @@ class MultiAgentSecOpsOrchestrator:
                 response = AIMessage(content="")
 
                 while iteration < max_iterations:
+                    # Context window compaction safeguard for multi-iteration long-running tasks
+                    current_msgs = _compact_context(current_msgs, max_messages=18)
+
                     full_chunks = []
                     async for chunk in model_to_call.astream(current_msgs):
                         full_chunks.append(chunk)
@@ -518,18 +580,25 @@ class MultiAgentSecOpsOrchestrator:
                     for tc in tool_calls:
                         tc_name = tc.get("name", "")
                         tc_args = tc.get("args", {})
+                        if not isinstance(tc_args, dict):
+                            try:
+                                tc_args = json.loads(tc_args) if isinstance(tc_args, str) else {}
+                            except Exception:
+                                tc_args = {}
                         tc_id = tc.get("id") or f"call_{tc_name}_{iteration}"
 
                         if cb:
                             cb("supervisor", json.dumps({"__type__": "tool_call", "name": tc_name, "args": tc_args}))
+                        await asyncio.sleep(0.01)
 
                         if tc_name in tool_map:
-                            t_out = self._invoke_tool_safely(tool_map[tc_name], tc_args, "Supervisor")
+                            t_out = await asyncio.to_thread(self._invoke_tool_safely, tool_map[tc_name], tc_args, "Supervisor")
                         else:
                             t_out = f"Tool '{tc_name}' is not registered."
 
                         if cb:
                             cb("supervisor", json.dumps({"__type__": "tool_result", "name": tc_name, "result": str(t_out)}))
+                        await asyncio.sleep(0.01)
 
                         current_msgs.append(ToolMessage(content=str(t_out), tool_call_id=tc_id, name=tc_name))
 
@@ -539,7 +608,7 @@ class MultiAgentSecOpsOrchestrator:
                 if (iteration >= max_iterations and getattr(response, "tool_calls", None)) or (
                     not str(getattr(response, "content", "") or "").strip() and iteration > 0
                 ):
-                    synth_msgs = list(current_msgs)
+                    synth_msgs = _compact_context(list(current_msgs), max_messages=16)
                     synth_msgs.append(
                         SystemMessage(
                             content="You have executed the required actions. Synthesize all observations, tool outputs, and actions above into a comprehensive, clear, and final response for the user."
@@ -699,8 +768,8 @@ class MultiAgentSecOpsOrchestrator:
             ports = m_ports.group(1).replace(" ", "") if m_ports else "80,443,8080"
 
             # Execute recon tools with middleware protection
-            scan_out = self._invoke_tool_safely(recon_port_scan, {"target": target, "ports": ports}, "ReconAgent")
-            probe_out = self._invoke_tool_safely(web_surface_probe, {"url": f"https://{target}"}, "ReconAgent")
+            scan_out = await asyncio.to_thread(self._invoke_tool_safely, recon_port_scan, {"target": target, "ports": ports}, "ReconAgent")
+            probe_out = await asyncio.to_thread(self._invoke_tool_safely, web_surface_probe, {"url": f"https://{target}"}, "ReconAgent")
 
             # Emit A2A result back
             a2a_msg = self.a2a_bus.send(
@@ -736,8 +805,8 @@ class MultiAgentSecOpsOrchestrator:
             code_to_audit = m_code.group(1) if m_code else sample_code
 
             # Execute SAST and CVE tools with middleware
-            sast_out = self._invoke_tool_safely(sast_code_audit, {"code_snippet_or_file": code_to_audit}, "AuditAgent")
-            cve_out = self._invoke_tool_safely(cve_advisory_search, {"query": cve_query}, "AuditAgent")
+            sast_out = await asyncio.to_thread(self._invoke_tool_safely, sast_code_audit, {"code_snippet_or_file": code_to_audit}, "AuditAgent")
+            cve_out = await asyncio.to_thread(self._invoke_tool_safely, cve_advisory_search, {"query": cve_query}, "AuditAgent")
 
             a2a_msg = self.a2a_bus.send(
                 sender="AuditAgent",
@@ -771,7 +840,8 @@ class MultiAgentSecOpsOrchestrator:
 
         async def exploit_node(state: AgentState) -> Dict[str, Any]:
             # PoC Verification agent
-            poc_out = self._invoke_tool_safely(
+            poc_out = await asyncio.to_thread(
+                self._invoke_tool_safely,
                 falsifiable_poc_runner,
                 {
                     "hypothesis": "Dynamic host header reflection allows cache poisoning",
@@ -781,7 +851,8 @@ class MultiAgentSecOpsOrchestrator:
                 "ExploitAgent",
             )
 
-            ev_out = self._invoke_tool_safely(
+            ev_out = await asyncio.to_thread(
+                self._invoke_tool_safely,
                 evidence_recorder,
                 {
                     "title": "PoC Reflection Test",
@@ -854,7 +925,7 @@ class MultiAgentSecOpsOrchestrator:
                 m_url = re.search(r"https?://[^\s'\"`]+", last_message)
                 if m_url:
                     url = m_url.group(0).rstrip(".,;)")
-                    ok, msg, installed = self.skill_mgr.install_skill_from_repo(url)
+                    ok, msg, installed = await asyncio.to_thread(self.skill_mgr.install_skill_from_repo, url)
                     if ok:
                         for s in installed:
                             self.skill_mgr.activate_skill(s)
@@ -871,7 +942,7 @@ class MultiAgentSecOpsOrchestrator:
                     if last_lower.startswith(prefix):
                         q = last_message[len(prefix):].strip(" :\"'")
                         break
-                search_raw = self._invoke_tool_safely(google_web_search, {"query": q or last_message, "max_results": 5}, "DevAgent")
+                search_raw = await asyncio.to_thread(self._invoke_tool_safely, google_web_search, {"query": q or last_message, "max_results": 5}, "DevAgent")
                 try:
                     search_res = json.loads(search_raw)
                     hits = search_res.get("results", [])
@@ -933,7 +1004,7 @@ class MultiAgentSecOpsOrchestrator:
                     cmd = cmd[2:].strip()
                 elif cmd.startswith("!"):
                     cmd = cmd[1:].strip()
-                cmd_out = self._invoke_tool_safely(bash_cli, {"command": cmd}, "DevAgent")
+                cmd_out = await asyncio.to_thread(self._invoke_tool_safely, bash_cli, {"command": cmd}, "DevAgent")
                 try:
                     res_j = json.loads(cmd_out)
                     out_text = res_j.get("stdout") or res_j.get("stderr") or res_j.get("error") or "Executed successfully with no output."
@@ -943,22 +1014,22 @@ class MultiAgentSecOpsOrchestrator:
                     output = f"💻 **Executed Sandbox Command:** `{cmd}`\n```json\n{cmd_out}\n```"
 
             elif "status" in last_lower or ("git" in last_lower and "diff" not in last_lower):
-                status_out = self._invoke_tool_safely(git_status_tool, {}, "DevAgent")
+                status_out = await asyncio.to_thread(self._invoke_tool_safely, git_status_tool, {}, "DevAgent")
                 output = f"**Git Status:**\n```json\n{status_out}\n```"
             elif "diff" in last_lower:
                 staged = "staged" in last_lower or "cached" in last_lower
-                diff_out = self._invoke_tool_safely(git_diff_tool, {"staged": staged}, "DevAgent")
+                diff_out = await asyncio.to_thread(self._invoke_tool_safely, git_diff_tool, {"staged": staged}, "DevAgent")
                 output = f"**Git Diff:**\n```json\n{diff_out}\n```"
             elif "grep" in last_lower or ("search" in last_lower and "code" in last_lower):
                 query = last_message.split()[-1].strip("\"'") if len(last_message.split()) > 1 else "def "
-                grep_out = self._invoke_tool_safely(grep_search, {"query": query}, "DevAgent")
+                grep_out = await asyncio.to_thread(self._invoke_tool_safely, grep_search, {"query": query}, "DevAgent")
                 output = f"**Code Search Results:**\n```json\n{grep_out}\n```"
             elif "glob" in last_lower or "find file" in last_lower:
-                glob_out = self._invoke_tool_safely(glob_files, {"pattern": "**/*.py"}, "DevAgent")
+                glob_out = await asyncio.to_thread(self._invoke_tool_safely, glob_files, {"pattern": "**/*.py"}, "DevAgent")
                 output = f"**Discovered Project Files:**\n```json\n{glob_out}\n```"
             else:
-                glob_out = self._invoke_tool_safely(glob_files, {"pattern": "*"}, "DevAgent")
-                status_out = self._invoke_tool_safely(git_status_tool, {}, "DevAgent")
+                glob_out = await asyncio.to_thread(self._invoke_tool_safely, glob_files, {"pattern": "*"}, "DevAgent")
+                status_out = await asyncio.to_thread(self._invoke_tool_safely, git_status_tool, {}, "DevAgent")
                 output = f"**Repository Overview:**\n```json\n{status_out}\n```\n\n**Root Files:**\n```json\n{glob_out}\n```"
 
             a2a_msg = self.a2a_bus.send(
