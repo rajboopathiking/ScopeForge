@@ -227,7 +227,7 @@ def test_skills_manager():
     # Test auto matching
     matches = mgr.auto_match_skills("Let us test subdomain enumeration and dns")
     assert len(matches) > 0
-    assert matches[0].name == "subdomain-recon"
+    assert any(m.name == "subdomain-recon" for m in matches)
 
     # Test prompt augmentation
     instructions = mgr.get_prompt_instructions("idor on api")

@@ -120,6 +120,22 @@ def test_cli_model_switching():
         assert cli.handle_slash_command(f"/model {target_name}") is True
         assert cli.provider_mgr.active_provider_name == target_name
 
+        # Query by 1-based number index (e.g. /model 1)
+        assert cli.handle_slash_command("/model 1") is True
+        assert cli.provider_mgr.active_provider_name == providers[0].name
+
+
+def test_cli_routes_to_tui_on_subcommand(monkeypatch):
+    """Verify running `scopeforge tui` routes to Textual dashboard instead of executing mission 'tui'."""
+    from scopeforge_engine.cli import main
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["scopeforge", "tui"])
+    mock_run = MagicMock()
+    monkeypatch.setattr("scopeforge_engine.tui.app.ScopeForgeTUIApp.run", mock_run)
+    main()
+    assert mock_run.called
+
 
 def test_cli_terminal_approval_callback():
     """Verify HITL terminal approval handles auto-approve and user confirmation."""

@@ -155,9 +155,26 @@ class ScopeForgeCLI:
         )
 
     def _select_model_by_name(self, model_query: str) -> bool:
-        """Find and activate a model matching the query string."""
+        """Find and activate a model matching query or 1-based index."""
+        model_query = model_query.strip()
+        providers = self.provider_mgr.list_providers()
+        # 1. Check numeric index (e.g. /model 1)
+        if model_query.isdigit():
+            idx = int(model_query) - 1
+            if 0 <= idx < len(providers):
+                self.provider_mgr.set_active_provider(providers[idx].name)
+                return True
+            return False
+
+        # 2. Exact match
         query_lower = model_query.lower()
-        for cfg in self.provider_mgr.list_providers():
+        for cfg in providers:
+            if query_lower == cfg.name.lower():
+                self.provider_mgr.set_active_provider(cfg.name)
+                return True
+
+        # 3. Substring match
+        for cfg in providers:
             if query_lower in cfg.name.lower() or query_lower in cfg.model.lower():
                 self.provider_mgr.set_active_provider(cfg.name)
                 return True
@@ -617,24 +634,33 @@ class ScopeForgeCLI:
         self.console.print()
 
     def _show_models(self):
-        """Display all configured models in a clean table."""
-        table = Table(title="Configured LLM Models", box=ROUNDED, border_style="cyan")
-        table.add_column("#", width=4)
-        table.add_column("Name", style="bold white")
-        table.add_column("Provider", style="cyan")
-        table.add_column("Model ID", style="dim")
-        table.add_column("Status", style="green")
-
+        """Display all configured models in a clean, robust table."""
         providers = self.provider_mgr.list_providers()
         active_name = self.provider_mgr.active_provider_name
-        for idx, cfg in enumerate(providers):
-            is_active = cfg.name == active_name
-            status = "[bold green]ACTIVE[/bold green]" if is_active else "[dim]available[/dim]"
-            table.add_row(str(idx + 1), cfg.name, cfg.provider.value, cfg.model, status)
 
-        self.console.print()
-        self.console.print(table)
-        self.console.print("[dim]Switch model with: /model <name>[/dim]\n")
+        try:
+            table = Table(title="Configured LLM Models", box=ROUNDED, border_style="cyan")
+            table.add_column("#", width=4, justify="right")
+            table.add_column("Name", style="bold white", min_width=18)
+            table.add_column("Provider", style="cyan", min_width=10)
+            table.add_column("Model ID", style="dim", min_width=20)
+            table.add_column("Status", min_width=10)
+
+            for idx, cfg in enumerate(providers):
+                is_active = cfg.name == active_name
+                status = "[bold green]ACTIVE[/bold green]" if is_active else "[dim]available[/dim]"
+                table.add_row(str(idx + 1), cfg.name, cfg.provider.value, cfg.model, status)
+
+            self.console.print()
+            self.console.print(table)
+            self.console.print("[dim]Switch model with: [bold white]/model <name or number>[/bold white] (e.g. [cyan]/model 1[/cyan] or [cyan]/model claude[/cyan])[/dim]\n")
+        except Exception:
+            # Bulleted fallback in case terminal width or buffer encounters stream limits
+            self.console.print(f"\n[bold]Configured LLM Models ({len(providers)}):[/]")
+            for idx, cfg in enumerate(providers, 1):
+                star = "★ " if cfg.name == active_name else "  "
+                self.console.print(f" {star}{idx:2d}. [bold]{cfg.name}[/] ({cfg.provider.value} / {cfg.model})")
+            self.console.print("[dim]Switch model with: /model <name or number>[/dim]\n")
 
     def _show_doctor(self):
         """Run system diagnostics."""
@@ -666,6 +692,19 @@ class ScopeForgeCLI:
                 user_input = await self.session.prompt_async(self.get_prompt_text())
                 text = user_input.strip()
                 if not text:
+                    continue
+
+                if text.lower() in ("tui", "dashboard", "gui"):
+                    self.console.print("[dim cyan]Switching to full-screen Textual dashboard...[/dim cyan]")
+                    from .tui.app import ScopeForgeTUIApp
+                    app = ScopeForgeTUIApp()
+                    app.run()
+                    self.console.clear()
+                    self.print_banner()
+                    continue
+
+                if text.lower() == "help":
+                    self._show_help()
                     continue
 
                 if text.startswith("/"):
@@ -757,20 +796,15 @@ def main():
 
     args = parser.parse_args()
 
-    # Route to legacy Textual full-screen dashboard if requested
-    if args.tui or os.environ.get("SCOPEFORGE_UI") == "tui":
+    # Route to legacy Textual full-screen dashboard if requested via flag, argument, or env var
+    query_raw = (args.query or "").strip().lower()
+    if args.tui or query_raw in ("tui", "--tui", "dashboard", "gui") or os.environ.get("SCOPEFORGE_UI") == "tui":
         from .tui.app import ScopeForgeTUIApp
         app = ScopeForgeTUIApp()
         app.run()
         return
 
-    # Install uvloop for fast async I/O if available
-    try:
-        import uvloop
-        uvloop.install()
-    except Exception:
-        pass
-
+    # Use standard Python asyncio event loop (uvloop has terminal/termios signal issues with prompt_toolkit)
     cli = ScopeForgeCLI(
         mode=args.mode,
         scope=args.scope,

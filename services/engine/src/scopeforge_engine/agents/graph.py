@@ -791,17 +791,47 @@ class MultiAgentSecOpsOrchestrator:
                         fallback_success = False
 
                 if not fallback_success:
+                    # Automatic Resilience: If primary model failed (e.g. 429 Rate Limit),
+                    # attempt failover to other configured providers with valid credentials
+                    for cand_name, cand_cfg in self.provider_mgr.providers.items():
+                        if cand_name != active_cfg.name and getattr(cand_cfg, "api_key", None):
+                            try:
+                                from ..llm_providers.factory import create_chat_model
+                                cand_model = create_chat_model(cand_cfg)
+                                cand_chunks = []
+                                async for chunk in cand_model.astream(prompt_msgs):
+                                    cand_chunks.append(chunk)
+                                    txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                                    if txt and cb:
+                                        cb("supervisor", txt)
+                                if cand_chunks:
+                                    fb_resp = cand_chunks[0]
+                                    for c in cand_chunks[1:]:
+                                        fb_resp = fb_resp + c
+                                    ext_txt = _extract_chunk_text(getattr(fb_resp, "content", ""))
+                                    if ext_txt.strip():
+                                        response = AIMessage(
+                                            content=(
+                                                f"*[Resilience Failover: automatically switched to `{cand_name}` due to error on `{active_cfg.name}`]*\n\n"
+                                                + ext_txt
+                                            )
+                                        )
+                                        fallback_success = True
+                                        break
+                            except Exception:
+                                continue
+
+                if not fallback_success:
                     err_short = err.splitlines()[0][:600] if err else type(e).__name__
                     response = AIMessage(
                         content=(
                             f"⚠️ **LLM call failed** (`{active_cfg.name}` / `{active_cfg.model}`): {err_short}\n\n"
                             f"Query was: **{str(last_message)[:400]}**\n\n"
                             "**Fix (pick one):**\n"
-                            f"- `/model` — switch to a working preset (try `openrouter-free` or `groq-llama3`)\n"
+                            f"- `/model` — switch to another configured provider (e.g. `/model 1` or `/model claude`)\n"
                             f"- `/config set key <API_KEY>` — set key for `{active_cfg.provider.value}`\n"
                             f"- `/config set model <model_id>` — e.g. `openrouter/free`\n"
-                            f"- `/config set base <url>` — custom endpoint, `/doctor` to diagnose\n"
-                            f"- Offline mock is active if no key is set; general Q&A still works in limited mode."
+                            f"- `/doctor` — diagnose provider connections and configuration"
                         )
                     )
             response = self.pipeline.run_after_llm(response, {"agent": "Supervisor"})
