@@ -30,6 +30,16 @@ class MiddlewarePipeline:
                 return m
         return None
 
+    def get_middleware(self, name_or_type: Any) -> Optional[BaseMiddleware]:
+        """Retrieve a middleware instance by name, class name, or type."""
+        for m in self.middlewares:
+            if isinstance(name_or_type, str):
+                if m.name == name_or_type or m.__class__.__name__ == name_or_type:
+                    return m
+            elif isinstance(name_or_type, type) and isinstance(m, name_or_type):
+                return m
+        return None
+
     def set_mode(self, mode: str):
         """Set the execution mode on the ScopeGate middleware."""
         gate = self.get_scope_gate()

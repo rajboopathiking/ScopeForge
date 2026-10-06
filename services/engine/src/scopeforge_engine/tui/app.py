@@ -1022,7 +1022,7 @@ class ScopeForgeTUIApp(App):
         elif action == "/clear":
             self.action_clear_chat()
 
-        elif action == "/quit":
+        elif action in ("/cli", "/exit", "/quit"):
             self.exit()
 
         else:
@@ -1275,6 +1275,13 @@ class ScopeForgeTUIApp(App):
 
 
 def main():
+    import sys
+    if "--cli" in sys.argv:
+        sys.argv = [a for a in sys.argv if a != "--cli"]
+        from ..cli import main as cli_main
+        cli_main()
+        return
+
     try:
         import uvloop
         uvloop.install()
