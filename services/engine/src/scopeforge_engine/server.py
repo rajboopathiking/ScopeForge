@@ -1455,7 +1455,10 @@ class Engine:
 
     @staticmethod
     def _read_policy_file(path: str) -> dict:
-        import tomllib
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib  # type: ignore[no-redef]
 
         candidate = Path(path)
         if not candidate.is_file():

@@ -129,7 +129,10 @@ PROVIDER_TYPES: dict[str, dict] = {
 
 def load_provider_config(store_root: Path) -> dict[str, dict]:
     """Read providers.toml (secret REFERENCES only, never values)."""
-    import tomllib
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib  # type: ignore[no-redef]
 
     path = Path(store_root) / "providers.toml"
     try:
