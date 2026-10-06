@@ -71,6 +71,7 @@ from ..sec_tools import (
     ALL_CODE_TOOLS,
     ALL_CYBER_TOOLS,
     ALL_SUITE_TOOLS,
+    append_file,
     bash_cli,
     bash_security_exec,
     cve_advisory_search,
@@ -85,6 +86,7 @@ from ..sec_tools import (
     grep_search,
     recon_port_scan,
     sast_code_audit,
+    store_large_file,
     view_file,
     web_surface_probe,
     write_file,
@@ -179,10 +181,22 @@ class MultiAgentSecOpsOrchestrator:
         HEAD_CHARS = 8000
         TAIL_CHARS = 3000
         if len(out_str) > MAX_TOOL_CHARS:
+            spill_hint = ""
+            try:
+                import datetime
+                spill_dir = Path(".scopeforge/runs/tool_spills")
+                spill_dir.mkdir(parents=True, exist_ok=True)
+                clean_tool = "".join(c for c in tool_name if c.isalnum() or c in ("-", "_"))
+                spill_file = spill_dir / f"spill_{clean_tool}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+                spill_file.write_text(out_str, encoding="utf-8")
+                spill_hint = f" [Full untruncated content preserved on disk at: {spill_file}]"
+            except Exception:
+                pass
+
             omitted = len(out_str) - HEAD_CHARS - TAIL_CHARS
             out_str = (
                 f"{out_str[:HEAD_CHARS]}\n\n"
-                f"... [ScopeForge Context Window Safeguard: {omitted} characters truncated to avoid token overflow] ...\n\n"
+                f"... [ScopeForge Context Window Safeguard: {omitted} characters truncated to avoid token overflow.{spill_hint}] ...\n\n"
                 f"{out_str[-TAIL_CHARS:]}"
             )
         return out_str
@@ -363,6 +377,18 @@ class MultiAgentSecOpsOrchestrator:
                 "tools": [{"name": t.name, "description": t.description} for t in tools],
             }, indent=2)
 
+        def _add_scope_func(target: str) -> str:
+            msg = self.add_authorized_scope(target)
+            return json.dumps({"status": "SUCCESS", "message": msg, "target": target})
+
+        def _get_scope_status_func(**kwargs) -> str:
+            gate = self.pipeline.get_scope_gate()
+            return json.dumps({
+                "mode": self.get_current_mode(),
+                "authorized_scopes": sorted(list(gate.authorized_scopes)) if gate else [],
+                "auto_adapt": getattr(gate, "auto_adapt", True) if gate else False,
+            }, indent=2)
+
         return [
             StructuredTool.from_function(
                 func=_invoke_subagent_func,
@@ -414,6 +440,16 @@ class MultiAgentSecOpsOrchestrator:
                 func=_list_mcp_servers_func,
                 name="list_mcp_servers",
                 description="List all configured MCP servers and their active tool definitions.",
+            ),
+            StructuredTool.from_function(
+                func=_add_scope_func,
+                name="add_authorized_scope",
+                description="Dynamically add a target domain, URL, or IP address to the ScopeGate authorized scope allowlist.",
+            ),
+            StructuredTool.from_function(
+                func=_get_scope_status_func,
+                name="get_scope_status",
+                description="Retrieve current ScopeGate authorization status, active mode, and allowlist entries.",
             ),
         ]
 
@@ -531,7 +567,14 @@ class MultiAgentSecOpsOrchestrator:
                 "6. Format code and output in clean markdown with diffs and file paths explicitly specified.\n"
                 "7. REALISTIC CVSS & THREAT MODELING: Distinguish between active exploitable vulnerabilities and Informational/Hardening defense-in-depth gaps. "
                 "Missing HTTP security headers (CSP, X-Frame-Options, HSTS) or wildcard CORS on public content are LOW/INFORMATIONAL or MEDIUM (CVSS 3.0-5.3), never Critical 9.0+. "
-                "Reserve CRITICAL (CVSS 9.0+) strictly for verified, exploitable risks (unauthenticated RCE, confirmed SQL injection, auth bypass).\n\n"
+                "Reserve CRITICAL (CVSS 9.0+) strictly for verified, exploitable risks (unauthenticated RCE, confirmed SQL injection, auth bypass).\n"
+                "8. LARGE FILE & REPORT STORAGE STRATEGY: When generating or storing large reports, code bases, or evidence dumps, "
+                "NEVER attempt to output massive files (>4KB or 100+ lines) in a single tool call to avoid token truncation mid-content. "
+                "Use progressive multi-step chunking: initialize with `write_file(..., overwrite=True)`, then append subsequent sections with `append_file(...)` or `write_file(..., append=True)`. "
+                "When inspecting large files, use `view_file` which pages up to 250 lines and provides `next_start_line`. "
+                "For large command outputs, pass `output_file='path/to/log'` in `bash_cli` to stream directly to disk without size truncation.\n"
+                "9. DYNAMIC SCOPE ADAPTATION: ScopeGate automatically recognizes target domains, subdomains (*.domain.com), and endpoints from the user's mission. "
+                "You can also dynamically register newly discovered perimeter targets using `add_authorized_scope(target)` to adapt authorization on-the-fly.\n\n"
                 f"{proj_rules}\n{user_prefs}\n{rag_info}\n{skills_info}"
             )
             prompt_msgs = [SystemMessage(content=sys_prompt)] + list(state["messages"][-5:])
@@ -1124,14 +1167,21 @@ class MultiAgentSecOpsOrchestrator:
         max_iterations: int = 25,
     ) -> AgentState:
         """Execute the LangGraph multi-agent pipeline."""
-        self.pipeline.middlewares[1].set_mode(mode)  # update ScopeGate mode
+        gate = self.pipeline.get_scope_gate()
+        if gate:
+            gate.set_mode(mode)
+            gate.adapt_to_mission(user_message, scope)
+            active_scope = sorted(list(gate.authorized_scopes))
+        else:
+            self.set_mode(mode)
+            active_scope = scope or ["authorized.example", "*.example.com", "localhost"]
 
         initial_state: AgentState = {
             "messages": (history or []) + [HumanMessage(content=user_message)],
             "active_agent": "supervisor",
             "mission": user_message,
             "mode": mode,
-            "scope": scope or ["authorized.example", "*.example.com", "localhost"],
+            "scope": active_scope,
             "findings": [],
             "evidence_store": [],
             "a2a_log": [],

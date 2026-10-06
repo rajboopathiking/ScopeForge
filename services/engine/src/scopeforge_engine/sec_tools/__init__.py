@@ -1,6 +1,7 @@
 """Cybersecurity and Developer Tools Package."""
 from .code_tools import (
     ALL_CODE_TOOLS,
+    append_file,
     bash_cli,
     edit_file,
     git_commit_tool,
@@ -9,6 +10,7 @@ from .code_tools import (
     glob_files,
     google_web_search,
     grep_search,
+    store_large_file,
     view_file,
     write_file,
 )
@@ -41,6 +43,8 @@ __all__ = [
     "view_file",
     "edit_file",
     "write_file",
+    "append_file",
+    "store_large_file",
     "glob_files",
     "grep_search",
     "git_diff_tool",

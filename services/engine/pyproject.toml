@@ -1,6 +1,6 @@
 [project]
 name = "scopeforge"
-version = "0.1.6"
+version = "0.1.7"
 description = "ScopeForge — Commercial-Grade Cybersecurity Multi-Agent Harness & Interactive TUI"
 readme = "README.md"
 requires-python = ">=3.12"

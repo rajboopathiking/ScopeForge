@@ -790,3 +790,88 @@ def test_dynamic_scopegate_and_config_loader(tmp_path):
     default_gate = ScopeGateMiddleware()
     assert "thangarasusamayal.vercel.app" in default_gate.authorized_scopes
     assert "pentest-ground.com" in default_gate.authorized_scopes
+
+
+def test_dynamic_scope_adaptation_and_large_file_strategies(tmp_path):
+    """Verify dynamic scope adaptation, domain hierarchy, and large file chunking strategies."""
+    import json
+    from scopeforge_engine.middleware.scope_gate import ScopeGateMiddleware
+    from scopeforge_engine.sec_tools.code_tools import append_file, bash_cli, store_large_file, view_file, write_file
+
+    # 1. Dynamic Subdomain Hierarchy Adaptation
+    gate = ScopeGateMiddleware(authorized_scopes=["pentest-ground.com"], mode="live", auto_adapt=True)
+    proceed, reason, _ = gate.before_tool("recon_port_scan", {"target": "sub.pentest-ground.com"}, {})
+    assert proceed
+    assert "sub.pentest-ground.com" in gate.authorized_scopes
+
+    # Forbidden pattern still strictly blocked
+    proceed, reason, _ = gate.before_tool("recon_port_scan", {"target": "portal.bank.gov"}, {})
+    assert not proceed
+    assert "forbidden" in reason.lower()
+
+    # Mission-based automatic target extraction & adaptation
+    adapted = gate.adapt_to_mission("Scan web perimeter at https://staging.app.io:8080 and api.corp.dev")
+    assert "staging.app.io" in adapted
+    assert "api.corp.dev" in adapted
+    assert "staging.app.io" in gate.authorized_scopes
+    assert "api.corp.dev" in gate.authorized_scopes
+
+    # Command-line target extraction from bash commands
+    proceed, reason, _ = gate.before_tool("bash_security_exec", {"command": "curl -I https://pentest-ground.com/api/v1"}, {})
+    assert proceed
+
+    # 2. Large File Handling Strategies: write_file, append_file, store_large_file
+    test_file = tmp_path / "large_assessment_report.md"
+
+    # Step 1: Initial write
+    part1_res = json.loads(write_file.func(str(test_file), "# Executive Security Report\n\n## Section 1: Scope\n", overwrite=True))
+    assert part1_res["status"] == "SUCCESS"
+    assert part1_res["mode"] == "write"
+
+    # Step 2: append_file
+    append_res = json.loads(append_file.func(str(test_file), "\n## Section 2: Reconnaissance Findings\n- Open ports: 80, 443\n"))
+    assert append_res["status"] == "SUCCESS"
+    assert append_res["bytes_appended"] > 0
+
+    # Step 3: write_file with append=True
+    part3_res = json.loads(write_file.func(str(test_file), "\n## Section 3: Remediation Roadmap\n", append=True))
+    assert part3_res["status"] == "SUCCESS"
+    assert part3_res["mode"] == "append"
+
+    # Verify complete file on disk without mid-content cutting
+    content = test_file.read_text(encoding="utf-8")
+    assert "# Executive Security Report" in content
+    assert "Section 1: Scope" in content
+    assert "Section 2: Reconnaissance Findings" in content
+    assert "Section 3: Remediation Roadmap" in content
+
+    # 3. store_large_file chunking verification
+    chunk_file = tmp_path / "streamed_audit.log"
+    chunk0 = json.loads(store_large_file.func(str(chunk_file), "CHUNK_0_HEADER\n", chunk_index=0, total_chunks=2))
+    assert chunk0["is_complete"] is False
+    chunk1 = json.loads(store_large_file.func(str(chunk_file), "CHUNK_1_FOOTER\n", chunk_index=1, total_chunks=2))
+    assert chunk1["is_complete"] is True
+    assert "CHUNK_0_HEADER" in chunk_file.read_text()
+    assert "CHUNK_1_FOOTER" in chunk_file.read_text()
+
+    # 4. view_file paging constraint on large file
+    long_file = tmp_path / "long_log.txt"
+    long_file.write_text("\n".join(f"Line {i}: telemetry event" for i in range(1, 401)), encoding="utf-8")
+
+    # Requesting lines 1-400 gets safely bounded to max 250 lines
+    view_res = json.loads(view_file.func(str(long_file), start_line=1, end_line=400))
+    assert view_res["has_more"] is True
+    assert view_res["range"] == "1-250"
+    assert view_res["next_start_line"] == 251
+
+    # Request second page
+    page2_res = json.loads(view_file.func(str(long_file), start_line=view_res["next_start_line"], end_line=400))
+    assert page2_res["range"] == "251-400"
+    assert page2_res["has_more"] is False
+
+    # 5. bash_cli direct disk streaming
+    out_capture = tmp_path / "direct_cmd.txt"
+    cmd_res = json.loads(bash_cli.func("echo 'Streamed output directly to disk'", output_file=str(out_capture)))
+    assert cmd_res["success"] is True
+    assert out_capture.exists()
+    assert "Streamed output directly to disk" in out_capture.read_text()

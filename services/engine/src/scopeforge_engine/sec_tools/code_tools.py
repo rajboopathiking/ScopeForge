@@ -18,11 +18,11 @@ from langchain_core.tools import tool
 
 @tool
 def view_file(file_path: str, start_line: int = 1, end_line: int = 100) -> str:
-    """View the contents of a local file with line numbers.
+    """View the contents of a local file with line numbers and paging metadata.
     Args:
         file_path: Path to the file to inspect.
         start_line: 1-indexed start line number (default 1).
-        end_line: 1-indexed end line number (default 100).
+        end_line: 1-indexed end line number (default 100, max 250 per call for safe context management).
     """
     path = Path(file_path).resolve()
     if not path.exists():
@@ -33,19 +33,27 @@ def view_file(file_path: str, start_line: int = 1, end_line: int = 100) -> str:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
-        
+
         total_lines = len(lines)
         start = max(1, start_line)
-        end = min(total_lines, max(start, end_line))
-        
+        MAX_PAGE_LINES = 250
+        requested_end = max(start, end_line)
+        end = min(total_lines, min(start + MAX_PAGE_LINES - 1, requested_end))
+
         formatted_lines = []
         for i in range(start, end + 1):
             formatted_lines.append(f"{i:4d} | {lines[i - 1].rstrip()}")
+
+        has_more = end < total_lines
+        next_start = end + 1 if has_more else None
 
         return json.dumps({
             "file": str(path),
             "total_lines": total_lines,
             "range": f"{start}-{end}",
+            "has_more": has_more,
+            "next_start_line": next_start,
+            "paging_hint": f"Call view_file(file_path='{file_path}', start_line={next_start}, end_line={next_start + 100}) to view remaining content." if has_more else "End of file reached.",
             "content": "\n".join(formatted_lines),
         }, indent=2)
     except Exception as e:
@@ -94,28 +102,109 @@ def edit_file(file_path: str, target_content: str, replacement_content: str) -> 
 
 
 @tool
-def write_file(file_path: str, content: str, overwrite: bool = True) -> str:
-    """Create a new file or overwrite an existing file with provided content.
+def write_file(
+    file_path: str,
+    content: str,
+    overwrite: bool = True,
+    append: bool = False,
+    chunk_index: int = 0,
+    total_chunks: int = 1,
+) -> str:
+    """Create a new file, overwrite, or incrementally append content without mid-content truncation.
     Args:
         file_path: Path of the file to write.
-        content: Code or text content to write.
-        overwrite: Whether to overwrite existing file (default True).
+        content: Code, text, or markdown content to write.
+        overwrite: Whether to overwrite existing file (default True, ignored if append is True).
+        append: If True, appends content to the end of the file.
+        chunk_index: 0-indexed sequence number if writing multi-part content (default 0).
+        total_chunks: Expected total number of chunks (default 1).
     """
     path = Path(file_path).resolve()
-    if path.exists() and not overwrite:
+    if path.exists() and not overwrite and not append and chunk_index == 0:
         return json.dumps({"error": f"File already exists and overwrite is set to False: {file_path}"})
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        file_mode = "a" if (append or chunk_index > 0) else "w"
+        with open(path, file_mode, encoding="utf-8") as f:
             f.write(content)
+            f.flush()
+
+        total_bytes = path.stat().st_size
         return json.dumps({
             "status": "SUCCESS",
             "file": str(path),
+            "mode": "append" if file_mode == "a" else "write",
             "bytes_written": len(content.encode("utf-8")),
+            "total_file_bytes": total_bytes,
+            "chunk_index": chunk_index,
+            "total_chunks": total_chunks,
+            "is_complete": chunk_index + 1 >= total_chunks,
         }, indent=2)
     except Exception as e:
         return json.dumps({"error": f"Failed writing file: {e}"})
+
+
+@tool
+def append_file(file_path: str, content: str) -> str:
+    """Append text content to the end of a file (creates file if not present).
+    Designed for progressive generation and streaming storage of large files, reports, and logs without truncation.
+    Args:
+        file_path: Path to the target file.
+        content: Chunk of text or markdown content to append.
+    """
+    path = Path(file_path).resolve()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+        return json.dumps({
+            "status": "SUCCESS",
+            "file": str(path),
+            "bytes_appended": len(content.encode("utf-8")),
+            "total_file_bytes": path.stat().st_size,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"Failed appending to file: {e}"})
+
+
+@tool
+def store_large_file(
+    file_path: str,
+    content_chunk: str,
+    chunk_index: int = 0,
+    total_chunks: int = 1,
+    mode: str = "write",
+) -> str:
+    """Store large file content using a chunked / streaming strategy to eliminate mid-content truncation.
+    Args:
+        file_path: Target path for the file.
+        content_chunk: The text or markdown content chunk to write or append.
+        chunk_index: 0-indexed sequence number of this chunk (default 0).
+        total_chunks: Expected total number of chunks (default 1).
+        mode: 'write' (overwrite on chunk 0, append thereafter) or 'append' (always append).
+    """
+    path = Path(file_path).resolve()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_mode = "a" if (mode == "append" or chunk_index > 0) else "w"
+        with open(path, file_mode, encoding="utf-8") as f:
+            f.write(content_chunk)
+            f.flush()
+        total_bytes = path.stat().st_size
+        return json.dumps({
+            "status": "SUCCESS",
+            "file": str(path),
+            "bytes_chunk_written": len(content_chunk.encode("utf-8")),
+            "total_file_bytes": total_bytes,
+            "chunk_index": chunk_index,
+            "total_chunks": total_chunks,
+            "is_complete": chunk_index + 1 >= total_chunks,
+            "strategy_note": "Multi-part large file storage preserved on disk without truncation.",
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"Failed storing large file chunk: {e}"})
 
 
 @tool
@@ -257,11 +346,12 @@ def git_commit_tool(message: str) -> str:
 
 
 @tool
-def bash_cli(command: str, timeout: int = 120) -> str:
+def bash_cli(command: str, timeout: int = 120, output_file: Optional[str] = None) -> str:
     """Execute a bash / terminal command in the workspace directory.
     Args:
         command: The terminal command line string to execute.
         timeout: Execution timeout in seconds (default 120).
+        output_file: Optional path to save full stdout/stderr directly to disk without truncation.
     """
     forbidden_patterns = ["rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:", "chmod -R 777 /"]
     for fb in forbidden_patterns:
@@ -298,11 +388,46 @@ def bash_cli(command: str, timeout: int = 120) -> str:
                 "success": False,
             }, indent=2)
 
+        out_clean = stdout_data.strip() if stdout_data else ""
+        err_clean = stderr_data.strip() if stderr_data else ""
+
+        # Direct disk output capture strategy
+        if output_file:
+            out_path = Path(output_file).resolve()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(stdout_data or "")
+                if stderr_data:
+                    f.write("\n--- STDERR ---\n")
+                    f.write(stderr_data)
+            return json.dumps({
+                "command": command,
+                "return_code": proc.returncode,
+                "output_file": str(out_path),
+                "bytes_written": out_path.stat().st_size,
+                "preview": out_clean[:1000] if out_clean else "",
+                "success": proc.returncode == 0,
+            }, indent=2)
+
+        # Large output auto-spill safeguard: if stdout > 10,000 characters, preserve to disk
+        spill_note = None
+        if len(out_clean) > 10000:
+            spill_dir = Path(".scopeforge/runs/bash_outputs")
+            spill_dir.mkdir(parents=True, exist_ok=True)
+            import datetime
+            spill_file = spill_dir / f"bash_{proc.pid}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            try:
+                spill_file.write_text(stdout_data or "", encoding="utf-8")
+                spill_note = f"Full untruncated output ({len(out_clean)} chars) preserved on disk at: {spill_file}"
+            except Exception:
+                pass
+
         return json.dumps({
             "command": command,
             "return_code": proc.returncode,
-            "stdout": stdout_data.strip() if stdout_data else "",
-            "stderr": stderr_data.strip() if stderr_data else "",
+            "stdout": out_clean,
+            "stderr": err_clean,
+            "storage_note": spill_note,
             "success": proc.returncode == 0,
         }, indent=2)
     except Exception as e:
@@ -410,6 +535,8 @@ ALL_CODE_TOOLS = [
     view_file,
     edit_file,
     write_file,
+    append_file,
+    store_large_file,
     glob_files,
     grep_search,
     git_diff_tool,

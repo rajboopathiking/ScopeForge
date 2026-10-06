@@ -332,10 +332,11 @@ def evidence_recorder(title: str, artifact_type: str, content: str, finding_id: 
 
 
 @tool
-def bash_security_exec(command: str) -> str:
+def bash_security_exec(command: str, output_file: Optional[str] = None) -> str:
     """Safely execute an authorized security command line in the local sandbox.
     Args:
         command: Command string (e.g., 'whoami', 'curl -I https://authorized.example', 'git status')
+        output_file: Optional path to save full stdout directly to disk without size truncation.
     """
     # Strict block on destructive commands
     forbidden_prefixes = ["rm -rf", "mkfs", "dd if=", ":(){ :|:& };:", "chmod -R 777 /"]
@@ -349,17 +350,30 @@ def bash_security_exec(command: str) -> str:
             shell=True,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
             cwd=str(Path.cwd()),
         )
+        if output_file:
+            out_p = Path(output_file).resolve()
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            out_p.write_text(proc.stdout or "", encoding="utf-8")
+            return json.dumps({
+                "command": command,
+                "return_code": proc.returncode,
+                "output_file": str(out_p),
+                "bytes_written": out_p.stat().st_size,
+                "preview": proc.stdout[:1000] if proc.stdout else "",
+            }, indent=2)
+
         return json.dumps({
             "command": command,
             "return_code": proc.returncode,
-            "stdout": proc.stdout[:2000],
-            "stderr": proc.stderr[:1000],
+            "stdout": proc.stdout[:8000],
+            "stderr": proc.stderr[:2000],
+            "total_stdout_len": len(proc.stdout or ""),
         }, indent=2)
     except subprocess.TimeoutExpired:
-        return json.dumps({"command": command, "error": "Execution timed out after 10 seconds"})
+        return json.dumps({"command": command, "error": "Execution timed out after 30 seconds"})
     except Exception as e:
         return json.dumps({"command": command, "error": str(e)})
 
