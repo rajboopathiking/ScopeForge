@@ -1288,7 +1288,10 @@ def main():
     except Exception:
         pass
     app = ScopeForgeTUIApp()
-    app.run()
+    try:
+        app.run()
+    except (KeyboardInterrupt, EOFError):
+        pass
 
 
 if __name__ == "__main__":

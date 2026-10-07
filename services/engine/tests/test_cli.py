@@ -245,3 +245,20 @@ def test_cli_config_commands():
     assert cli.handle_slash_command("/config set base https://proxy.custom.io/v1") is True
     assert cli.provider_mgr.get_active_config().api_base == "https://proxy.custom.io/v1"
 
+
+@pytest.mark.asyncio
+async def test_cli_tui_and_review_inside_running_loop():
+    """Verify /tui and /review do not crash with 'asyncio.run() cannot be called from a running event loop'."""
+    cli = ScopeForgeCLI()
+
+    # Test /tui inside running loop
+    with patch("scopeforge_engine.tui.app.ScopeForgeTUIApp.run_async") as mock_run_async:
+        mock_run_async.return_value = None
+        assert cli.handle_slash_command("/tui") is True
+
+    # Test /review inside running loop
+    with patch.object(cli, "execute_mission") as mock_exec:
+        mock_exec.return_value = None
+        assert cli.handle_slash_command("/review") is True
+
+

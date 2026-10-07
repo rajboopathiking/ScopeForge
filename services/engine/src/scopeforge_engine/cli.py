@@ -413,8 +413,9 @@ class ScopeForgeCLI:
             )
             self.console.print()
 
-        except asyncio.CancelledError:
-            self.console.print("\n[bold yellow]⚠️ Task interrupted by user (<kbd>Ctrl+C</kbd>).[/bold yellow]\n")
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self.console.print("\n[bold yellow]⚠️ Task interrupted by operator (<kbd>Ctrl+C</kbd>).[/bold yellow]\n")
+            return
         except Exception as e:
             self.console.print(f"\n[bold red]❌ Multi-agent execution error: {e}[/bold red]\n")
 
@@ -531,7 +532,16 @@ class ScopeForgeCLI:
                 self.console.print("[dim green]✓ No workspace modifications to review. Working directory is clean.[/dim green]")
             else:
                 self.console.print("[dim cyan]Starting autonomous security review on current git diff...[/dim cyan]")
-                asyncio.run(self.execute_mission(f"Perform a comprehensive Claude Code style code review on this git diff:\n```diff\n{diff_text[:4000]}\n```"))
+                review_prompt = f"Perform a comprehensive Claude Code style code review on this git diff:\n```diff\n{diff_text[:4000]}\n```"
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop and loop.is_running():
+                    loop.create_task(self.execute_mission(review_prompt))
+                else:
+                    asyncio.run(self.execute_mission(review_prompt))
 
         elif cmd == "/init":
             p = Path("SCOPEFORGE.md")
@@ -599,11 +609,22 @@ class ScopeForgeCLI:
                     txt = r.get("text", "") if isinstance(r, dict) else str(r)
                     self.console.print(f"\n[bold cyan]Match {idx}:[/]\n[dim]{txt[:300]}...[/dim]")
 
-        elif cmd == "/tui":
+        elif cmd in ("/tui", "/dashboard", "/gui"):
             self.console.print("[dim cyan]Switching to full-screen Textual dashboard...[/dim cyan]")
             from .tui.app import ScopeForgeTUIApp
             app = ScopeForgeTUIApp()
-            app.run()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                loop.create_task(app.run_async())
+            else:
+                try:
+                    app.run()
+                except (KeyboardInterrupt, EOFError):
+                    pass
             self.console.clear()
             self.print_banner()
 
@@ -843,25 +864,58 @@ class ScopeForgeCLI:
     async def run_repl(self):
         """Run the main interactive REPL loop."""
         self.print_banner()
+        last_ctrl_c_time = 0.0
 
         while True:
             try:
                 user_input = await self.session.prompt_async(self.get_prompt_text())
+                last_ctrl_c_time = 0.0
                 text = user_input.strip()
                 if not text:
                     continue
 
-                if text.lower() in ("tui", "dashboard", "gui"):
+                if text.lower() in ("tui", "dashboard", "gui", "/tui", "/dashboard", "/gui"):
                     self.console.print("[dim cyan]Switching to full-screen Textual dashboard...[/dim cyan]")
-                    from .tui.app import ScopeForgeTUIApp
-                    app = ScopeForgeTUIApp()
-                    app.run()
-                    self.console.clear()
-                    self.print_banner()
+                    try:
+                        from .tui.app import ScopeForgeTUIApp
+                        app = ScopeForgeTUIApp()
+                        await app.run_async()
+                    except (KeyboardInterrupt, asyncio.CancelledError):
+                        pass
+                    except Exception as e:
+                        self.console.print(f"[bold red]❌ Dashboard error: {e}[/bold red]")
+                    finally:
+                        self.console.clear()
+                        self.print_banner()
                     continue
 
                 if text.lower() == "help":
                     self._show_help()
+                    continue
+
+                if text.lower() == "/review":
+                    from .sec_tools.code_tools import git_diff_tool
+                    res = json.loads(git_diff_tool.invoke({"staged": False}))
+                    diff_text = res.get("diff", "")
+                    if not res.get("has_changes"):
+                        self.console.print("[dim green]✓ No workspace modifications to review. Working directory is clean.[/dim green]")
+                    else:
+                        self.console.print("[dim cyan]Starting autonomous security review on current git diff...[/dim cyan]")
+                        self._current_task = asyncio.create_task(
+                            self.execute_mission(f"Perform a comprehensive Claude Code style code review on this git diff:\n```diff\n{diff_text[:4000]}\n```")
+                        )
+                        try:
+                            await self._current_task
+                        except (KeyboardInterrupt, asyncio.CancelledError):
+                            if self._current_task and not self._current_task.done():
+                                self._current_task.cancel()
+                                try:
+                                    await asyncio.wait_for(asyncio.shield(self._current_task), timeout=0.8)
+                                except (asyncio.CancelledError, asyncio.TimeoutError, KeyboardInterrupt, Exception):
+                                    pass
+                            self.console.print("\n[bold yellow]⚠️ Review interrupted by operator (<kbd>Ctrl+C</kbd>).[/bold yellow]\n")
+                        finally:
+                            self._current_task = None
                     continue
 
                 if text.startswith("/"):
@@ -874,17 +928,28 @@ class ScopeForgeCLI:
                 self._current_task = asyncio.create_task(self.execute_mission(text))
                 try:
                     await self._current_task
-                except asyncio.CancelledError:
-                    self.console.print("\n[bold yellow]⚠️ Task cancelled.[/bold yellow]\n")
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    if self._current_task and not self._current_task.done():
+                        self._current_task.cancel()
+                        try:
+                            await asyncio.wait_for(asyncio.shield(self._current_task), timeout=0.8)
+                        except (asyncio.CancelledError, asyncio.TimeoutError, KeyboardInterrupt, Exception):
+                            pass
+                    self.console.print("\n[bold yellow]⚠️ Task interrupted by operator (<kbd>Ctrl+C</kbd>).[/bold yellow]\n")
                 finally:
                     self._current_task = None
 
             except KeyboardInterrupt:
-                # Ctrl+C at prompt: clear current line, do not exit
-                self.console.print("\n[dim](Type /exit or press Ctrl+D to quit)[/dim]")
+                # Ctrl+C at prompt: exit cleanly if pressed twice within 2s, else notify
+                now = time.time()
+                if now - last_ctrl_c_time < 2.0:
+                    self.console.print("\n[dim cyan]Exiting ScopeForge. Goodbye![/dim cyan]")
+                    break
+                last_ctrl_c_time = now
+                self.console.print("\n[dim](Press Ctrl+C again or type /exit to quit)[/dim]")
                 continue
             except EOFError:
-                # Ctrl+D at prompt: exit
+                # Ctrl+D at prompt: exit cleanly
                 self.console.print("\n[dim cyan]Exiting ScopeForge. Goodbye![/dim cyan]")
                 break
 
@@ -958,7 +1023,10 @@ def main():
     if args.tui or query_raw in ("tui", "--tui", "dashboard", "gui") or os.environ.get("SCOPEFORGE_UI") == "tui":
         from .tui.app import ScopeForgeTUIApp
         app = ScopeForgeTUIApp()
-        app.run()
+        try:
+            app.run()
+        except (KeyboardInterrupt, EOFError):
+            pass
         return
 
     # Use standard Python asyncio event loop (uvloop has terminal/termios signal issues with prompt_toolkit)
@@ -972,13 +1040,17 @@ def main():
     if args.agent:
         cli.pending_agent = args.agent
 
-    # Direct one-shot mission execution (e.g. `scopeforge "audit target.com"`)
-    if args.query:
-        cli.print_banner()
-        asyncio.run(cli.execute_mission(args.query))
-    else:
-        # Interactive Claude Code / AGY REPL
-        asyncio.run(cli.run_repl())
+    try:
+        # Direct one-shot mission execution (e.g. `scopeforge "audit target.com"`)
+        if args.query:
+            cli.print_banner()
+            asyncio.run(cli.execute_mission(args.query))
+        else:
+            # Interactive Claude Code / AGY REPL
+            asyncio.run(cli.run_repl())
+    except (KeyboardInterrupt, EOFError):
+        print("\nExiting ScopeForge. Goodbye!")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
