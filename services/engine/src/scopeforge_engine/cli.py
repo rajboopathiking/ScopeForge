@@ -51,6 +51,8 @@ class ScopeForgeSlashCompleter(Completer):
         ("/help", "Show all available commands, modes, and shortcuts"),
         ("/mode", "Switch ScopeGate mode (plan, redteam, blueteam, audit, live)"),
         ("/model", "View or switch active LLM provider and model"),
+        ("/model add", "Register a custom LLM model (interactive wizard or inline)"),
+        ("/config", "View or update provider settings (key, model, base URL)"),
         ("/scope", "Inspect or add authorized target domains/IPs"),
         ("/agent", "Direct next prompt to a specific agent (recon, audit, exploit, dev)"),
         ("/diff", "View git diff of uncommitted workspace modifications"),
@@ -447,16 +449,21 @@ class ScopeForgeCLI:
                 else:
                     self.console.print(f"[bold red]Unknown mode:[/] {target_mode}. Choose from: {', '.join(valid_modes)}")
 
-        elif cmd == "/model":
+        elif cmd in ("/model", "/models"):
             if not args:
                 self._show_models()
+            elif args[0].lower() == "add":
+                self._handle_model_add(args[1:])
             else:
                 query = " ".join(args)
                 if self._select_model_by_name(query):
                     active = self.provider_mgr.get_active_config()
                     self.console.print(f"[dim green]✓ Active model switched to:[/] [bold white]{active.name}[/] [dim]({active.model})[/dim]")
                 else:
-                    self.console.print(f"[bold red]No matching model found for:[/] '{query}'. Type [bold white]/model[/] to see options.")
+                    self.console.print(f"[bold red]No matching model found for:[/] '{query}'. Type [bold white]/model[/] to see options or [bold white]/model add[/] to add one.")
+
+        elif cmd == "/config":
+            self._handle_config(args)
 
         elif cmd == "/scope":
             gate = self.pipeline.get_scope_gate()
@@ -613,7 +620,9 @@ class ScopeForgeCLI:
 
         table.add_row("/help", "Show this command reference")
         table.add_row("/mode [name]", "Switch ScopeGate mode: plan, audit, redteam, live")
-        table.add_row("/model [name]", "Switch LLM provider: Claude, GPT, Ollama, DeepSeek")
+        table.add_row("/model [name|#]", "Switch active LLM provider or model")
+        table.add_row("/model add", "Register custom LLM profile (wizard or inline)")
+        table.add_row("/config [set ...]", "View or update provider key, model, or base URL")
         table.add_row("/scope [target]", "Inspect or add authorized domain/IP targets")
         table.add_row("/agent [name]", "Route directly to recon, audit, exploit, dev")
         table.add_row("/diff", "View color syntax git diff of workspace changes")
@@ -653,14 +662,162 @@ class ScopeForgeCLI:
 
             self.console.print()
             self.console.print(table)
-            self.console.print("[dim]Switch model with: [bold white]/model <name or number>[/bold white] (e.g. [cyan]/model 1[/cyan] or [cyan]/model claude[/cyan])[/dim]\n")
+            self.console.print("[dim]Switch: [bold white]/model <name or #>[/bold white] | Add custom: [bold white]/model add[/bold white] | Config: [bold white]/config[/bold white][/dim]\n")
         except Exception:
             # Bulleted fallback in case terminal width or buffer encounters stream limits
             self.console.print(f"\n[bold]Configured LLM Models ({len(providers)}):[/]")
             for idx, cfg in enumerate(providers, 1):
                 star = "★ " if cfg.name == active_name else "  "
                 self.console.print(f" {star}{idx:2d}. [bold]{cfg.name}[/] ({cfg.provider.value} / {cfg.model})")
-            self.console.print("[dim]Switch model with: /model <name or number>[/dim]\n")
+            self.console.print("[dim]Switch model with: /model <name or number> | /model add[/dim]\n")
+
+    def _handle_model_add(self, args: List[str]):
+        """Register a new custom model either via arguments or interactive wizard."""
+        name = ""
+        model_id = ""
+        base_url = ""
+        api_key = ""
+        provider_type = "custom"
+
+        if args and any(arg.startswith("--") for arg in args):
+            import argparse
+            add_parser = argparse.ArgumentParser(prog="/model add", add_help=False)
+            add_parser.add_argument("--name", default="")
+            add_parser.add_argument("--model", default="")
+            add_parser.add_argument("--base", default="")
+            add_parser.add_argument("--key", default="")
+            add_parser.add_argument("--provider", default="custom")
+            try:
+                parsed, _ = add_parser.parse_known_args(args)
+                name = parsed.name
+                model_id = parsed.model
+                base_url = parsed.base
+                api_key = parsed.key
+                provider_type = parsed.provider
+            except Exception:
+                pass
+        elif len(args) >= 2:
+            name = args[0].strip()
+            model_id = args[1].strip()
+            if len(args) >= 3:
+                base_url = args[2].strip()
+            if len(args) >= 4:
+                api_key = args[3].strip()
+            if len(args) >= 5:
+                provider_type = args[4].strip()
+
+        # If missing name or model_id, run interactive wizard
+        if not name or not model_id:
+            self.console.print()
+            self.console.print(
+                Panel(
+                    "[bold cyan]⚡ ScopeForge Custom Model Setup Wizard[/bold cyan]\n"
+                    "[dim]Configure any OpenAI-compatible API, Anthropic proxy, Ollama, vLLM, or OpenRouter endpoint.[/dim]",
+                    box=ROUNDED,
+                    border_style="cyan",
+                )
+            )
+            try:
+                if not name:
+                    name = input("  1. Model Name (e.g. custom-claude, deepseek-chat): ").strip()
+                    if not name:
+                        self.console.print("[yellow]⚠️ Setup cancelled: Model name is required.[/yellow]\n")
+                        return
+
+                if not provider_type or provider_type == "custom":
+                    pt_input = input("  2. Provider Type [custom, anthropic, openai, ollama, groq, openrouter] (default: custom): ").strip().lower()
+                    if pt_input:
+                        provider_type = pt_input
+
+                if not model_id:
+                    model_id = input("  3. Model ID (e.g. claude-3-7-sonnet-20250219, gpt-4o, deepseek-chat): ").strip()
+                    if not model_id:
+                        self.console.print("[yellow]⚠️ Setup cancelled: Model ID is required.[/yellow]\n")
+                        return
+
+                if not base_url:
+                    base_url = input("  4. Base URL (e.g. https://api.justwoker.icu, http://localhost:11434/v1, or press Enter): ").strip()
+
+                if not api_key:
+                    api_key = input("  5. API Key (e.g. sk-..., env:KEY_NAME, or press Enter to skip): ").strip()
+
+            except (KeyboardInterrupt, EOFError):
+                self.console.print("\n[dim yellow]Model setup cancelled.[/dim yellow]\n")
+                return
+
+        try:
+            cfg = self.provider_mgr.add_custom_provider(
+                name=name,
+                model=model_id,
+                api_key=api_key or None,
+                api_base=base_url or None,
+                provider=provider_type,
+                set_active=True,
+            )
+            self.console.print()
+            self.console.print(
+                Panel(
+                    f"[bold green]✓ Custom model registered and set to ACTIVE![/bold green]\n\n"
+                    f"  • [bold]Name:[/]        [bold white]{cfg.name}[/]\n"
+                    f"  • [bold]Provider:[/]    [cyan]{cfg.provider.value}[/]\n"
+                    f"  • [bold]Model ID:[/]    [yellow]{cfg.model}[/]\n"
+                    f"  • [bold]Base URL:[/]    [dim]{cfg.api_base or '(default provider endpoint)'}[/dim]\n"
+                    f"  • [bold]API Key:[/]     [dim]{'••••••••' if cfg.api_key else '(none / inherited from environment)'}[/dim]\n"
+                    f"  • [bold]Saved to:[/]    [dim]{self.provider_mgr.config_path}[/dim]",
+                    title="[bold green]Model Activated[/bold green]",
+                    border_style="green",
+                    box=ROUNDED,
+                )
+            )
+            self.console.print()
+        except Exception as e:
+            self.console.print(f"\n[bold red]❌ Failed to register model:[/] {e}\n")
+
+    def _handle_config(self, args: List[str]):
+        """Inspect or configure active provider keys, models, or base endpoints."""
+        if not args:
+            active = self.provider_mgr.get_active_config()
+            self.console.print()
+            self.console.print(
+                Panel(
+                    f"[bold]Active Model:[/]  [bold white]{active.name}[/]\n"
+                    f"[bold]Provider:[/]      [cyan]{active.provider.value}[/]\n"
+                    f"[bold]Model ID:[/]      [yellow]{active.model}[/]\n"
+                    f"[bold]Base URL:[/]      [dim]{active.api_base or '(default endpoint)'}[/dim]\n"
+                    f"[bold]API Key:[/]       [dim]{'••••••••' if active.api_key else '(none / from env)'}[/dim]\n\n"
+                    f"[dim]Quick updates for active model:[/dim]\n"
+                    f"  • [white]/config set key <API_KEY>[/white]\n"
+                    f"  • [white]/config set model <MODEL_ID>[/white]\n"
+                    f"  • [white]/config set base <BASE_URL>[/white]\n"
+                    f"  • [white]/model add[/white] (to register a new model profile)",
+                    title="[bold cyan]Provider Configuration[/bold cyan]",
+                    border_style="cyan",
+                    box=ROUNDED,
+                )
+            )
+            self.console.print()
+            return
+
+        if args[0].lower() == "set" and len(args) >= 3:
+            sub = args[1].lower()
+            val = " ".join(args[2:]).strip()
+            active = self.provider_mgr.get_active_config()
+            if sub in ("key", "api_key", "apikey"):
+                active.api_key = self.provider_mgr._sanitize_api_key(val)
+                self.provider_mgr.save_config()
+                self.console.print(f"[dim green]✓ Updated API key for active model '{active.name}'.[/dim green]")
+            elif sub in ("model", "model_id"):
+                active.model = val
+                self.provider_mgr.save_config()
+                self.console.print(f"[dim green]✓ Updated model ID for active model '{active.name}' to '{val}'.[/dim green]")
+            elif sub in ("base", "base_url", "url"):
+                active.api_base = self.provider_mgr._normalize_base_for_provider(active.provider, val)
+                self.provider_mgr.save_config()
+                self.console.print(f"[dim green]✓ Updated base URL for active model '{active.name}' to '{active.api_base}'.[/dim green]")
+            else:
+                self.console.print(f"[yellow]Unknown config property:[/] '{sub}'. Choose: key, model, or base.")
+        else:
+            self.console.print("[yellow]Usage: /config set <key|model|base> <value>[/yellow]")
 
     def _show_doctor(self):
         """Run system diagnostics."""

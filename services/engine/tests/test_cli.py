@@ -192,3 +192,56 @@ async def test_cli_one_shot_execution():
         await cli.execute_mission("audit target.com")
         assert len(cli.chat_history) > 0
         assert cli.total_tokens > 0
+
+
+def test_cli_model_add_positional(tmp_path: Path):
+    """Verify adding custom model using positional slash command syntax."""
+    cli = ScopeForgeCLI()
+    res = cli.handle_slash_command(
+        "/model add my-deepseek deepseek-chat https://api.deepseek.com/v1 sk-test-key custom"
+    )
+    assert res is True
+    active = cli.provider_mgr.get_active_config()
+    assert active.name == "my-deepseek"
+    assert active.model == "deepseek-chat"
+    assert active.api_base == "https://api.deepseek.com/v1"
+    assert active.api_key == "sk-test-key"
+
+
+def test_cli_model_add_interactive_wizard():
+    """Verify adding custom model using interactive wizard prompts."""
+    cli = ScopeForgeCLI()
+    wizard_inputs = [
+        "wizard-claude",                       # 1. Model Name
+        "anthropic",                           # 2. Provider Type
+        "claude-3-7-sonnet-20250219",          # 3. Model ID
+        "https://api.justwoker.icu",           # 4. Base URL
+        "sk-wizard-key",                       # 5. API Key
+    ]
+    with patch("builtins.input", side_effect=wizard_inputs):
+        res = cli.handle_slash_command("/model add")
+        assert res is True
+
+    active = cli.provider_mgr.get_active_config()
+    assert active.name == "wizard-claude"
+    assert active.model == "claude-3-7-sonnet-20250219"
+    assert active.api_base == "https://api.justwoker.icu"
+    assert active.api_key == "sk-wizard-key"
+
+
+def test_cli_config_commands():
+    """Verify /config inspections and /config set updates."""
+    cli = ScopeForgeCLI()
+    # View config
+    assert cli.handle_slash_command("/config") is True
+
+    # Set key, model, base
+    assert cli.handle_slash_command("/config set key sk-new-custom-key") is True
+    assert cli.provider_mgr.get_active_config().api_key == "sk-new-custom-key"
+
+    assert cli.handle_slash_command("/config set model gpt-4o-custom") is True
+    assert cli.provider_mgr.get_active_config().model == "gpt-4o-custom"
+
+    assert cli.handle_slash_command("/config set base https://proxy.custom.io/v1") is True
+    assert cli.provider_mgr.get_active_config().api_base == "https://proxy.custom.io/v1"
+

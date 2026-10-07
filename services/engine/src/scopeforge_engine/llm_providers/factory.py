@@ -31,7 +31,7 @@ def create_chat_model(config: LLMConfig) -> BaseChatModel:
     elif provider == ProviderType.ANTHROPIC:
         try:
             from langchain_anthropic import ChatAnthropic
-            api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
+            api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")
             if not api_key:
                 # Return mock if key is missing
                 return MockSecOpsChatModel(model_name=f"[MOCK fallback: missing ANTHROPIC_API_KEY] {config.model}")
@@ -43,8 +43,9 @@ def create_chat_model(config: LLMConfig) -> BaseChatModel:
                 streaming=config.streaming,
             )
             # Honour custom proxy base URLs (previously silently dropped).
-            if config.api_base and config.api_base.strip():
-                kwargs["anthropic_api_url"] = config.api_base.strip().rstrip("/")
+            base = config.api_base or os.getenv("ANTHROPIC_BASE_URL")
+            if base and base.strip():
+                kwargs["anthropic_api_url"] = base.strip().rstrip("/")
             kwargs.update(config.extra_params)
             return ChatAnthropic(**kwargs)
         except Exception:
@@ -88,6 +89,7 @@ def create_chat_model(config: LLMConfig) -> BaseChatModel:
 
             if provider == ProviderType.OPENAI:
                 api_key = api_key or os.getenv("OPENAI_API_KEY")
+                base_url = base_url or os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
             elif provider == ProviderType.GROQ:
                 api_key = api_key or os.getenv("GROQ_API_KEY")
                 base_url = base_url or "https://api.groq.com/openai/v1"

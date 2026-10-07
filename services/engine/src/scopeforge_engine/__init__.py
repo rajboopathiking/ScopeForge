@@ -1,6 +1,6 @@
 """ScopeForge engine package (Phase 1 spine)."""
 
-__version__ = "0.1.11"
+__version__ = "0.1.12"
 
 # Defensive compatibility guard: Some environments have buggy Cython (e.g. 3.2.x)
 # that crashes on SQLAlchemy's cython.declare(cython.const[cython.int], 1).
