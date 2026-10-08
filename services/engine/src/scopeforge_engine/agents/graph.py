@@ -269,6 +269,33 @@ def _clean_tool_call_text(content: str) -> str:
     return cleaned.strip()
 
 
+# Keywords indicating the user goal requires REAL side effects (not chat).
+_EXEC_TASK_KEYWORDS = (
+    "screenshot", "capture", "playwright", "save to", "save it", "store here",
+    "copy to", "cp ", "mkdir", "write file", "create file", "download",
+    "ls ", "verify", "desktop", "takescreenshot", "take a screenshot",
+)
+
+# Patterns indicating the text claims a file/external operation succeeded.
+_SUCCESS_CLAIM_RE = re.compile(
+    r"(successfully captured|success.{0,20}captured|screenshot.*saved|file_size|"
+    r"PNG image data|1\.2MB|1920x1080|"
+    r"\"status\"\s*:\s*\"success\"|results?:\s*\n?.*verification)",
+    re.IGNORECASE,
+)
+
+
+def _task_needs_execution(user_goal: str) -> bool:
+    """True when the goal needs real tool side effects (Claude Code never fakes these)."""
+    goal = (user_goal or "").lower()
+    return any(k in goal for k in _EXEC_TASK_KEYWORDS)
+
+
+def _claims_file_success(text: str) -> bool:
+    """True when text claims a file/external operation succeeded."""
+    return bool(_SUCCESS_CLAIM_RE.search(text or ""))
+
+
 def _compact_context(messages: List[BaseMessage], max_messages: int = 18) -> List[BaseMessage]:
     """Preserves SystemMessage and initial user goal while compacting intermediate tool turns.
 
@@ -751,6 +778,7 @@ class MultiAgentSecOpsOrchestrator:
         try:
             current_msgs = list(prompt_msgs)
             iteration = 0
+            forced_exec_retries = 0
             response = AIMessage(content="")
 
             while iteration < max_iterations:
@@ -795,37 +823,28 @@ class MultiAgentSecOpsOrchestrator:
                     # (screenshot, file write/cp, bash) but model produced ZERO tool
                     # calls and instead faked success JSON (status:success, file_size,
                     # PNG image data, ls output). Never accept that as final —
-                    # force real execution like Claude Code does.
+                    # force real execution like Claude Code does (up to 4 retries).
                     _tool_msgs_so_far = sum(1 for m in current_msgs if isinstance(m, ToolMessage))
-                    _task_needs_exec = False
+                    _user_goal = ""
                     try:
-                        _user_goal = ""
                         for _m in reversed(state.get("messages", []) or []):
                             if isinstance(_m, HumanMessage):
-                                _user_goal = str(_m.content).lower()
+                                _user_goal = str(_m.content)
                                 break
-                        _task_needs_exec = any(k in _user_goal for k in (
-                            "screenshot", "capture", "playwright", "save to", "save it",
-                            "copy to", "cp ", "mkdir", "write file", "create file",
-                            "ls ", "verify", "desktop", "download",
-                        ))
                     except Exception:
-                        _task_needs_exec = False
-                    _claims_success = bool(re.search(
-                        r"(successfully captured|success.{0,20}captured|screenshot.*saved|"
-                        r"file_size|PNG image data|1\.2MB|1920x1080|"
-                        r"\"status\"\s*:\s*\"success\"|results?:\s*\n?.*verification)",
-                        content_str, re.IGNORECASE,
-                    ))
+                        _user_goal = ""
+                    _task_needs_exec = _task_needs_execution(_user_goal)
+                    _claims_success = _claims_file_success(content_str)
                     _is_hallucinated_exec = (
                         _task_needs_exec and _tool_msgs_so_far == 0
                         and (_claims_success or len(content_str) > 400)
-                        and iteration < 2
+                        and forced_exec_retries < 4 and iteration < max_iterations - 1
                     )
                     if _is_planning_only or _is_hallucinated_exec:
                         # Inject a continuation prompt to push from planning → acting
                         current_msgs.append(AIMessage(content=content_str))
                         if _is_hallucinated_exec:
+                            forced_exec_retries += 1
                             current_msgs.append(HumanMessage(
                                 content=(
                                     "You produced a text-only success report with ZERO tool executions. "
@@ -942,6 +961,36 @@ class MultiAgentSecOpsOrchestrator:
                             "- `/model openrouter-free-nemotron` / `/model groq-llama3`\n"
                         )
                     )
+
+            # FINAL SAFETY NET (never present unverified success):
+            # a stubborn weak model can burn all forced retries and still return
+            # text claiming files were saved/copied. Claude Code would report
+            # failure, never a fabricated file listing — so replace it.
+            try:
+                _final_goal = ""
+                for _m in reversed(state.get("messages", []) or []):
+                    if isinstance(_m, HumanMessage):
+                        _final_goal = str(_m.content)
+                        break
+                _final_obs = sum(1 for _m in current_msgs if isinstance(_m, ToolMessage))
+                _final_text = str(getattr(response, "content", "") or "")
+                if _task_needs_execution(_final_goal) and _final_obs == 0 and _claims_file_success(_final_text):
+                    response = AIMessage(
+                        content=(
+                            "❌ **Could not complete: no tools were actually executed.**\n\n"
+                            f"Goal was: **{_final_goal[:300]}**\n\n"
+                            "The model described success in text but produced zero tool observations "
+                            "after repeated attempts, so nothing was saved, copied, or captured. "
+                            "I am not reporting fabricated paths or file sizes.\n\n"
+                            "**Next steps (pick one):**\n"
+                            "- Retry the task (sometimes the model complies on a fresh attempt)\n"
+                            "- `/model` — switch to a stronger model (reasoning/free-tier routers often ignore tool calls)\n"
+                            "- Run the first step directly: `bash_cli(command=\"ls -lh <dir>\")` to confirm the workspace, then re-issue the task\n"
+                            "- `/doctor` — diagnose provider/model health"
+                        )
+                    )
+            except Exception:
+                pass
 
         except Exception as e:
             err = str(e)
@@ -1149,9 +1198,21 @@ class MultiAgentSecOpsOrchestrator:
                 or "mock" in str(getattr(chat_model, "model_name", "")).lower()
             )
             skills_info = self.skill_mgr.get_prompt_instructions(str(last_message))
+            import os as _os
+            import platform as _platform
+
+            _env_ctx = (
+                f"[Runtime environment: OS={_platform.system()} {_platform.machine()}, "
+                f"cwd={_os.getcwd()}, home={_os.path.expanduser('~')}. "
+                f"Always use absolute local paths valid on THIS machine (never /home/user/... on macOS, never hallucinated case dirs). "
+                f"Correct tool syntax: capture_screenshot(url=\"https://...\", output_file=\"<abs path>.png\"), "
+                f"bash_cli(command=\"ls -lh <abs path> && file <abs path>\"). "
+                f"NEVER write `bash_cli --command=` (wrong syntax) or invent tool JSON outputs.]"
+            )
             sys_prompt = (
                 "You are ScopeForge — a modern autonomous AI agent harness (matching Antigravity CLI and Claude Code) "
                 "with full tool execution, multi-agent collaboration (A2A), Model Context Protocol (MCP), and dynamic skill capabilities.\n\n"
+                f"{_env_ctx}\n\n"
                 "CRITICAL AUTONOMOUS BEHAVIOR RULES:\n"
                 "1. YOU HAVE DIRECT LOCAL EXECUTION CAPABILITIES. You can run bash commands, edit files, view files, clone repos, "
                 "search the web, install skills, add MCP servers, and delegate to specialized subagents.\n"

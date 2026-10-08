@@ -44,6 +44,16 @@ from .skills.manager import SkillManager
 from .wiki.store import SecWiki
 
 
+def _display_model_id(cfg: Any) -> str:
+    """Render `provider/model` without doubling when the slug already includes it
+    (e.g. provider=openrouter + model=openrouter/free → openrouter/free)."""
+    provider = getattr(cfg.provider, "value", str(cfg.provider))
+    model = str(cfg.model or "")
+    if model.startswith(provider + "/"):
+        return model
+    return f"{provider}/{model}"
+
+
 class ScopeForgeSlashCompleter(Completer):
     """Fuzzy auto-completer with descriptive metadata for slash commands."""
 
@@ -240,7 +250,7 @@ class ScopeForgeCLI:
         banner_content = (
             f"[bold cyan]⚡ ScopeForge[/bold cyan] [bold white]v{__version__}[/] "
             f"[dim]— Autonomous Cybersecurity Harness[/dim]\n\n"
-            f"[bold]Model:[/]  [bold white]{active_cfg.name}[/] [dim]({active_cfg.provider.value}/{active_cfg.model})[/dim]\n"
+            f"[bold]Model:[/]  [bold white]{active_cfg.name}[/] [dim]({_display_model_id(active_cfg)})[/dim]\n"
             f"[bold]Mode:[/]   [bold {mode_color}][{self.sec_mode.upper()}][/] [dim](ScopeGate RoE sandbox)[/dim]\n"
             f"[bold]Scope:[/]  [bold yellow]{scopes_str}[/]\n"
             f"[bold]Dir:[/]    [dim]{cwd_str}[/]\n\n"
@@ -679,7 +689,7 @@ class ScopeForgeCLI:
             for idx, cfg in enumerate(providers):
                 is_active = cfg.name == active_name
                 status = "[bold green]ACTIVE[/bold green]" if is_active else "[dim]available[/dim]"
-                table.add_row(str(idx + 1), cfg.name, cfg.provider.value, cfg.model, status)
+                table.add_row(str(idx + 1), cfg.name, cfg.provider.value, _display_model_id(cfg), status)
 
             self.console.print()
             self.console.print(table)
@@ -689,7 +699,7 @@ class ScopeForgeCLI:
             self.console.print(f"\n[bold]Configured LLM Models ({len(providers)}):[/]")
             for idx, cfg in enumerate(providers, 1):
                 star = "★ " if cfg.name == active_name else "  "
-                self.console.print(f" {star}{idx:2d}. [bold]{cfg.name}[/] ({cfg.provider.value} / {cfg.model})")
+                self.console.print(f" {star}{idx:2d}. [bold]{cfg.name}[/] ({_display_model_id(cfg)})")
             self.console.print("[dim]Switch model with: /model <name or number> | /model add[/dim]\n")
 
     def _handle_model_add(self, args: List[str]):

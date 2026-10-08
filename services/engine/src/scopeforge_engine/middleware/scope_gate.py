@@ -210,7 +210,9 @@ class ScopeGateMiddleware(BaseMiddleware):
         metadata: Dict[str, Any],
     ) -> Tuple[bool, str, Dict[str, Any]]:
         # 1. Mode Enforcement
-        network_tools = {"recon_port_scan", "web_surface_probe", "falsifiable_poc_runner", "bash_security_exec"}
+        # capture_screenshot performs live network egress (page navigation),
+        # so it is gated exactly like the other live tools (no silent bypass).
+        network_tools = {"recon_port_scan", "web_surface_probe", "falsifiable_poc_runner", "bash_security_exec", "capture_screenshot"}
 
         if self.mode == "plan":
             if tool_name in network_tools:
