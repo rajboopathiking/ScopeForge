@@ -550,6 +550,9 @@ class ScopeForgeTUIApp(App):
                         chat.add_agent_message("Supervisor", f"✓ Created & activated custom skill: **[{created.name}]** (`{created.path}`)")
                 else:
                     chat.add_agent_message("Supervisor", "Usage: `/skill add <name> [description]` or `/skill install <url>`")
+            elif len(parts) > 1 and parts[1].lower() in ("reload", "refresh", "rescan"):
+                info = self.skill_mgr.reload()
+                chat.add_agent_message("Supervisor", f"✓ Rescanned skills on disk: **{info['loaded']}** loaded ({info['added']} added, {info['removed']} removed). No restart needed.")
             elif len(parts) > 1 and parts[1].lower() != "list":
                 skill_name = parts[1].lower()
                 if self.skill_mgr.get_skill(skill_name):
@@ -581,7 +584,10 @@ class ScopeForgeTUIApp(App):
                             pass
                         self.mcp.registry.add_server(srv_name, srv_cmd)
                         self.mcp.enable_server(srv_name)
-                        chat.add_agent_message("Supervisor", f"✓ Added and enabled MCP server: **{srv_name}** (`{srv_cmd}`)")
+                        info = self.mcp.refresh(srv_name)
+                        n = info.get("tools", 0)
+                        note = f" — discovered {n} tool(s)" if n else " — enabled but no tools discovered yet (check command installs, then `/mcp tools`)"
+                        chat.add_agent_message("Supervisor", f"✓ Added and enabled MCP server: **{srv_name}** (`{srv_cmd}`){note}")
                     except Exception as e:
                         chat.add_agent_message("Supervisor", f"❌ Error adding MCP server: {e}")
                 else:
@@ -590,6 +596,7 @@ class ScopeForgeTUIApp(App):
                 srv_name = parts[2].strip()
                 try:
                     self.mcp.registry.remove_server(srv_name)
+                    self.mcp.refresh()
                     chat.add_agent_message("Supervisor", f"✓ Removed MCP server: **{srv_name}**")
                 except Exception as e:
                     chat.add_agent_message("Supervisor", f"❌ Error removing MCP server: {e}")
@@ -597,7 +604,18 @@ class ScopeForgeTUIApp(App):
                 srv_name = parts[2].strip()
                 try:
                     self.mcp.enable_server(srv_name)
-                    chat.add_agent_message("Supervisor", f"✓ Enabled MCP server: **{srv_name}**")
+                    info = self.mcp.refresh(srv_name)
+                    n = info.get("tools", 0)
+                    note = f" — {n} tool(s) live" if n else " — enabled, discovery found 0 tools (server may need install/time)"
+                    chat.add_agent_message("Supervisor", f"✓ Enabled MCP server: **{srv_name}**{note}")
+                except Exception as e:
+                    chat.add_agent_message("Supervisor", f"❌ Error: {e}")
+            elif len(parts) > 2 and parts[1].lower() == "disable":
+                srv_name = parts[2].strip()
+                try:
+                    self.mcp.disable_server(srv_name)
+                    self.mcp.refresh()
+                    chat.add_agent_message("Supervisor", f"✓ Disabled MCP server: **{srv_name}**")
                 except Exception as e:
                     chat.add_agent_message("Supervisor", f"❌ Error: {e}")
             elif len(parts) > 2 and parts[1].lower() == "disable":

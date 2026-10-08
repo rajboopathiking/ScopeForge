@@ -450,6 +450,14 @@ def google_web_search(query: str, max_results: int = 5) -> str:
 
     results: List[Dict[str, str]] = []
 
+    # Robust SSL context for macOS and diverse environments
+    import ssl
+    try:
+        import certifi
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ssl_ctx = ssl._create_unverified_context()
+
     # 1. Tavily API if key is present
     tavily_key = os.getenv("TAVILY_API_KEY")
     if tavily_key:
@@ -460,7 +468,7 @@ def google_web_search(query: str, max_results: int = 5) -> str:
                 data=req_data,
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {tavily_key}"},
             )
-            with urllib.request.urlopen(t_req, timeout=8) as resp:
+            with urllib.request.urlopen(t_req, context=ssl_ctx, timeout=8) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 for r in data.get("results", [])[:max_results]:
                     results.append({
@@ -484,7 +492,7 @@ def google_web_search(query: str, max_results: int = 5) -> str:
                     "Referer": "https://html.duckduckgo.com/",
                 },
             )
-            with urllib.request.urlopen(ddg_req, timeout=8) as resp:
+            with urllib.request.urlopen(ddg_req, context=ssl_ctx, timeout=8) as resp:
                 content = resp.read().decode("utf-8", errors="ignore")
 
             titles = re.findall(r'<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>', content)
@@ -512,8 +520,11 @@ def google_web_search(query: str, max_results: int = 5) -> str:
     if not results:
         try:
             wiki_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&format=json"
-            wiki_req = urllib.request.Request(wiki_url, headers={"User-Agent": "ScopeForge/1.0"})
-            with urllib.request.urlopen(wiki_req, timeout=5) as w_resp:
+            wiki_req = urllib.request.Request(
+                wiki_url,
+                headers={"User-Agent": "ScopeForge/1.0 (https://github.com/rajboopathiking/ScopeForge; contact@scopeforge.dev)"},
+            )
+            with urllib.request.urlopen(wiki_req, context=ssl_ctx, timeout=5) as w_resp:
                 w_data = json.loads(w_resp.read().decode("utf-8"))
                 for item in w_data.get("query", {}).get("search", [])[:max_results]:
                     results.append({
@@ -531,6 +542,61 @@ def google_web_search(query: str, max_results: int = 5) -> str:
     }, indent=2)
 
 
+@tool
+def capture_screenshot(url: str, output_file: str, full_page: bool = True, timeout: int = 30000) -> str:
+    """Capture a website screenshot to a local PNG file via headless browser.
+    Args:
+        url: Fully-qualified http(s) URL to capture.
+        output_file: Local .png path to write (parent dirs created).
+        full_page: Capture full scrollable page (default True).
+        timeout: Navigation timeout in ms (default 30000).
+    Returns JSON with real filesystem verification (size, file type).
+    Never fabricate success: if the browser extra is missing or navigation
+    fails, returns success=False with an actionable error.
+    """
+    out = Path(output_file).expanduser()
+    if out.suffix.lower() != ".png":
+        return json.dumps({"success": False, "error": "output_file must end with .png", "output_file": str(out)}, indent=2)
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
+    except ImportError:
+        return json.dumps({
+            "success": False,
+            "error": "browser capture needs the opt-in extra: `uv sync --extra browser` (playwright not installed). No file was written.",
+            "url": url,
+            "output_file": str(out),
+        }, indent=2)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(viewport={"width": 1920, "height": 1080})
+                page.goto(url, timeout=timeout)
+                page.screenshot(path=str(out), full_page=full_page)
+            finally:
+                browser.close()
+        if not out.exists():
+            return json.dumps({"success": False, "error": "screenshot command returned but file missing", "output_file": str(out)}, indent=2)
+        size = out.stat().st_size
+        # Minimal PNG magic check, no external `file` dependency
+        magic_ok = False
+        try:
+            with open(out, "rb") as f:
+                magic_ok = f.read(8) == b"\x89PNG\r\n\x1a\n"
+        except Exception:
+            magic_ok = False
+        return json.dumps({
+            "success": True if (size > 0 and magic_ok) else False,
+            "url": url,
+            "output_file": str(out),
+            "file_size": size,
+            "png_magic_ok": magic_ok,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": f"screenshot failed: {e}", "url": url, "output_file": str(out)}, indent=2)
+
+
 ALL_CODE_TOOLS = [
     view_file,
     edit_file,
@@ -544,5 +610,6 @@ ALL_CODE_TOOLS = [
     git_commit_tool,
     bash_cli,
     google_web_search,
+    capture_screenshot,
 ]
 

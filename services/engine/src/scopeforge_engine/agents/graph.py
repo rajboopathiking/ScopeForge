@@ -1,9 +1,13 @@
 """LangGraph Multi-Agent Orchestration Network for ScopeForge."""
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextvars
+import html
 import json
+import re
+import uuid
 from typing import Any, Callable, Dict, List, Literal, Optional
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool, tool
@@ -12,6 +16,257 @@ from langgraph.graph import END, START, StateGraph
 _stream_callback_var: contextvars.ContextVar[Optional[Callable[[str, str], None]]] = contextvars.ContextVar(
     "_stream_callback_var", default=None
 )
+
+
+def _extract_chunk_text(chunk_content: Any) -> str:
+    if not chunk_content:
+        return ""
+    if isinstance(chunk_content, str):
+        return chunk_content
+    if isinstance(chunk_content, list):
+        parts = []
+        for p in chunk_content:
+            if isinstance(p, str):
+                parts.append(p)
+            elif isinstance(p, dict):
+                parts.append(str(p.get("text") or p.get("content") or ""))
+        return "".join(parts)
+    return str(chunk_content)
+
+
+def _normalize_tool_call(name: str, args: Dict[str, Any], tool_map: Optional[Dict[str, Any]] = None) -> tuple[str, Dict[str, Any]]:
+    """Map common LLM hallucinated tool names and argument aliases to registered tools."""
+    aliases = {
+        "read_file": "view_file",
+        "read": "view_file",
+        "cat": "view_file",
+        "open_file": "view_file",
+        "file_view": "view_file",
+        "view": "view_file",
+        "write": "write_file",
+        "save_file": "write_file",
+        "create_file": "write_file",
+        "edit": "edit_file",
+        "modify_file": "edit_file",
+        "replace_file_content": "edit_file",
+        "append": "append_file",
+        "bash": "bash_cli",
+        "shell": "bash_cli",
+        "terminal": "bash_cli",
+        "run_command": "bash_cli",
+        "execute_command": "bash_cli",
+        "cmd": "bash_cli",
+        "exec": "bash_cli",
+        "glob": "glob_files",
+        "list_files": "glob_files",
+        "ls": "glob_files",
+        "find_files": "glob_files",
+        "dir": "glob_files",
+        "grep": "grep_search",
+        "search_code": "grep_search",
+        "search_files": "grep_search",
+        "find_in_files": "grep_search",
+        "google_search": "google_web_search",
+        "web_search": "google_web_search",
+        "google": "google_web_search",
+        "search_web": "google_web_search",
+        "git_status": "git_status_tool",
+        "status": "git_status_tool",
+        "git_diff": "git_diff_tool",
+        "diff": "git_diff_tool",
+        "git_commit": "git_commit_tool",
+        "commit": "git_commit_tool",
+        "port_scan": "recon_port_scan",
+        "nmap": "recon_port_scan",
+        "sast": "sast_code_audit",
+        "code_audit": "sast_code_audit",
+        "cve": "cve_advisory_search",
+        "cve_search": "cve_advisory_search",
+        "poc": "falsifiable_poc_runner",
+        "run_poc": "falsifiable_poc_runner",
+        "evidence": "evidence_recorder",
+        "screenshot": "capture_screenshot",
+        "screenshot_tool": "capture_screenshot",
+        "capture_screenshot": "capture_screenshot",
+        "take_screenshot": "capture_screenshot",
+        "playwright_automation": "capture_screenshot",
+        "playwright": "capture_screenshot",
+        "browser_screenshot": "capture_screenshot",
+        "web_screenshot": "capture_screenshot",
+        "subagent": "invoke_subagent",
+        "delegate": "invoke_subagent",
+        "a2a": "send_a2a_message",
+    }
+    clean_name = aliases.get(name.lower().strip(), name.strip())
+
+    if tool_map:
+        if clean_name not in tool_map:
+            for tm_k in tool_map.keys():
+                if tm_k.lower() == clean_name.lower():
+                    clean_name = tm_k
+                    break
+
+    norm_args = dict(args)
+    if "path" in norm_args and "file_path" not in norm_args:
+        norm_args["file_path"] = norm_args.pop("path")
+    if "filename" in norm_args and "file_path" not in norm_args:
+        norm_args["file_path"] = norm_args.pop("filename")
+    if "file" in norm_args and "file_path" not in norm_args:
+        norm_args["file_path"] = norm_args.pop("file")
+    if "filepath" in norm_args and "file_path" not in norm_args:
+        norm_args["file_path"] = norm_args.pop("filepath")
+    if "cmd" in norm_args and "command" not in norm_args:
+        norm_args["command"] = norm_args.pop("cmd")
+    if "--command" in norm_args and "command" not in norm_args:
+        norm_args["command"] = norm_args.pop("--command")
+    # Screenshot arg aliases (models emit url/output_file variants)
+    if "link" in norm_args and "url" not in norm_args:
+        norm_args["url"] = norm_args.pop("link")
+    if "website" in norm_args and "url" not in norm_args:
+        norm_args["url"] = norm_args.pop("website")
+    for _k in ("output", "file", "destination", "output_path", "path"):
+        if _k in norm_args and "output_file" not in norm_args:
+            norm_args["output_file"] = norm_args.pop(_k)
+            break
+    if "script" in norm_args and "command" not in norm_args:
+        norm_args["command"] = norm_args.pop("script")
+    if "q" in norm_args and "query" not in norm_args:
+        norm_args["query"] = norm_args.pop("q")
+    if "pattern" not in norm_args and "glob" in norm_args:
+        norm_args["pattern"] = norm_args.pop("glob")
+
+    return clean_name, norm_args
+
+
+def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Extract tool calls from native AIMessage.tool_calls or raw text syntax (ChatML, XML, JSON, ReAct)."""
+    extracted: List[Dict[str, Any]] = []
+
+    # 1. Native LangChain tool calls
+    native = getattr(msg, "tool_calls", None) or []
+    for tc in native:
+        if isinstance(tc, dict) and tc.get("name"):
+            name = tc.get("name")
+            args = tc.get("args") or {}
+            norm_name, norm_args = _normalize_tool_call(name, args, tool_map)
+            extracted.append({
+                "name": norm_name,
+                "args": norm_args,
+                "id": tc.get("id") or f"call_{uuid.uuid4().hex[:8]}"
+            })
+    if extracted:
+        return extracted
+
+    content = str(getattr(msg, "content", "") or "")
+    if not content.strip():
+        return []
+
+    # 2. Qwen / ChatML syntax: <|tool_call_start|>[func(args)]<|tool_call_end|>
+    qwen_matches = re.findall(r"<\|tool_call_start\|>(.*?)<\|tool_call_end\|>", content, re.DOTALL)
+    for m in qwen_matches:
+        m = m.strip()
+        if m.startswith("{") or m.startswith("["):
+            try:
+                parsed = json.loads(m)
+                items = parsed if isinstance(parsed, list) else [parsed]
+                for item in items:
+                    if isinstance(item, dict) and ("name" in item or "tool" in item):
+                        name = item.get("name") or item.get("tool")
+                        args = item.get("arguments") or item.get("args") or item.get("parameters") or {}
+                        norm_name, norm_args = _normalize_tool_call(name, args, tool_map)
+                        extracted.append({
+                            "name": norm_name,
+                            "args": norm_args,
+                            "id": f"call_{uuid.uuid4().hex[:8]}"
+                        })
+            except Exception:
+                pass
+
+        func_calls = re.findall(r"(\w+)\s*\((.*?)\)", m, re.DOTALL)
+        for fn_name, fn_args_str in func_calls:
+            args_dict = {}
+            if fn_args_str.strip():
+                try:
+                    tree = ast.parse(f"{fn_name}({fn_args_str})")
+                    call_node = tree.body[0].value
+                    for kw in call_node.keywords:
+                        args_dict[kw.arg] = ast.literal_eval(kw.value)
+                except Exception:
+                    pairs = re.findall(r'(\w+)\s*=\s*(?:["\']([^"\']*)["\']|([^\s,\)]+))', fn_args_str)
+                    for k, v1, v2 in pairs:
+                        args_dict[k] = v1 if v1 != "" else v2
+            norm_name, norm_args = _normalize_tool_call(fn_name, args_dict, tool_map)
+            extracted.append({
+                "name": norm_name,
+                "args": norm_args,
+                "id": f"call_{uuid.uuid4().hex[:8]}"
+            })
+
+    # 3. XML style: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+    xml_matches = re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
+    for xm in xml_matches:
+        try:
+            data = json.loads(xm.strip())
+            name = data.get("name") or data.get("tool")
+            args = data.get("arguments") or data.get("args") or data.get("parameters") or {}
+            norm_name, norm_args = _normalize_tool_call(name, args, tool_map)
+            extracted.append({
+                "name": norm_name,
+                "args": norm_args,
+                "id": f"call_{uuid.uuid4().hex[:8]}"
+            })
+        except Exception:
+            pass
+
+    # 4. Markdown JSON code blocks
+    json_blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+    for jb in json_blocks:
+        try:
+            data = json.loads(jb)
+            if any(k in data for k in ("tool", "name", "action")) and any(k in data for k in ("args", "arguments", "parameters", "action_input", "input")):
+                t_name = data.get("name") or data.get("tool") or data.get("action")
+                t_args = data.get("arguments") or data.get("args") or data.get("parameters") or data.get("action_input") or data.get("input") or {}
+                if isinstance(t_name, str) and t_name.strip():
+                    t_args_dict = t_args if isinstance(t_args, dict) else {"input": str(t_args)}
+                    norm_name, norm_args = _normalize_tool_call(t_name, t_args_dict, tool_map)
+                    extracted.append({
+                        "name": norm_name,
+                        "args": norm_args,
+                        "id": f"call_{uuid.uuid4().hex[:8]}"
+                    })
+        except Exception:
+            pass
+
+    # 5. ReAct format: Action: <tool>\nAction Input: <input>
+    react_matches = re.findall(r"(?:Action|Tool):\s*(\w+)\s*\n(?:Action\s+Input|Tool\s+Input|Args|Parameters):\s*([^\n]+|\{.*?\})", content, re.IGNORECASE | re.DOTALL)
+    for act_name, act_inp in react_matches:
+        act_name = act_name.strip()
+        act_inp = act_inp.strip()
+        args = {}
+        if act_inp.startswith("{") and act_inp.endswith("}"):
+            try:
+                args = json.loads(act_inp)
+            except Exception:
+                args = {"input": act_inp}
+        else:
+            args = {"input": act_inp}
+        norm_name, norm_args = _normalize_tool_call(act_name, args, tool_map)
+        extracted.append({
+            "name": norm_name,
+            "args": norm_args,
+            "id": f"call_{uuid.uuid4().hex[:8]}"
+        })
+
+    return extracted
+
+
+def _clean_tool_call_text(content: str) -> str:
+    """Strip raw tool-calling markup tags so conversation text remains clean and human-readable."""
+    cleaned = content
+    cleaned = re.sub(r"<\|tool_call_start\|>.*?<\|tool_call_end\|>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<tool_call>.*?</tool_call>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"(?:Action|Tool):\s*\w+\s*\n(?:Action\s+Input|Tool\s+Input|Args|Parameters):\s*(?:[^\n]+|\{.*?\})", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
 
 
 def _compact_context(messages: List[BaseMessage], max_messages: int = 18) -> List[BaseMessage]:
@@ -432,6 +687,11 @@ class MultiAgentSecOpsOrchestrator:
                 description="List all discovered and active skills currently available in ScopeForge.",
             ),
             StructuredTool.from_function(
+                func=lambda **kwargs: json.dumps(self.skill_mgr.reload()),
+                name="reload_skills",
+                description="Rescan SKILL.md files on disk so newly added skills apply without restart. Use after writing .scopeforge/skills/<name>/SKILL.md.",
+            ),
+            StructuredTool.from_function(
                 func=_add_mcp_server_func,
                 name="add_mcp_server",
                 description="Add and activate a Model Context Protocol (MCP) server by name and command line.",
@@ -440,6 +700,11 @@ class MultiAgentSecOpsOrchestrator:
                 func=_list_mcp_servers_func,
                 name="list_mcp_servers",
                 description="List all configured MCP servers and their active tool definitions.",
+            ),
+            StructuredTool.from_function(
+                func=lambda **kwargs: json.dumps(self.mcp.refresh()),
+                name="reload_mcp",
+                description="Refresh MCP tool discovery cache so newly enabled servers/tools appear immediately.",
             ),
             StructuredTool.from_function(
                 func=_add_scope_func,
@@ -452,6 +717,340 @@ class MultiAgentSecOpsOrchestrator:
                 description="Retrieve current ScopeGate authorization status, active mode, and allowlist entries.",
             ),
         ]
+
+    async def _execute_react_agent_loop(
+        self,
+        agent_name: str,
+        system_prompt: str,
+        tools: List[Any],
+        state: AgentState,
+        max_iterations: int = 25,
+        response_prefix: str = "",
+    ) -> Dict[str, Any]:
+        """Runs the autonomous ReAct (Reasoning -> Action -> Observation -> Synthesis) agent loop."""
+        chat_model = self.provider_mgr.get_chat_model()
+        active_cfg = self.provider_mgr.get_active_config()
+        is_mock = (
+            getattr(chat_model, "is_mock", False)
+            or active_cfg.provider == ProviderType.MOCK
+            or "mock" in str(getattr(chat_model, "model_name", "")).lower()
+        )
+
+        tool_map = {getattr(t, "name", str(t)): t for t in tools}
+        model_to_call = chat_model
+        if not is_mock and hasattr(chat_model, "bind_tools"):
+            try:
+                model_to_call = chat_model.bind_tools(tools)
+            except Exception:
+                model_to_call = chat_model
+
+        prompt_msgs = [SystemMessage(content=system_prompt)] + list(state["messages"][-5:])
+        prompt_msgs = self.pipeline.run_before_llm(prompt_msgs, {"agent": agent_name.capitalize()})
+        cb = _stream_callback_var.get()
+
+        try:
+            current_msgs = list(prompt_msgs)
+            iteration = 0
+            response = AIMessage(content="")
+
+            while iteration < max_iterations:
+                current_msgs = _compact_context(current_msgs, max_messages=18)
+                full_chunks = []
+
+                async for chunk in model_to_call.astream(current_msgs):
+                    full_chunks.append(chunk)
+                    txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                    if txt and cb:
+                        if "<|tool_call_start|>" not in txt and "<tool_call>" not in txt:
+                            cb(agent_name.lower(), txt)
+
+                if full_chunks:
+                    iter_resp = full_chunks[0]
+                    for c in full_chunks[1:]:
+                        iter_resp = iter_resp + c
+                else:
+                    iter_resp = AIMessage(content="")
+
+                extracted_content = _extract_chunk_text(getattr(iter_resp, "content", ""))
+                if extracted_content:
+                    iter_resp.content = extracted_content
+
+                tool_calls = _extract_tool_calls(iter_resp, tool_map)
+                if not tool_calls:
+                    content_str = str(extracted_content or "").strip()
+                    # Detect planning/reasoning responses that have no tool calls yet:
+                    # If this is iteration 0 and content looks like a plan (contains future-tense
+                    # markers like "I'll", "I will", "Step 1:"), push the model to act.
+                    _is_planning_only = (
+                        iteration == 0
+                        and bool(tool_map)  # tools are available
+                        and any(marker in content_str for marker in (
+                            "I'll ", "I will ", "Step 1", "First,", "first,",
+                            "Let me ", "I'll start", "I'll begin", "sequentially",
+                            "I need to ", "Let's start", "I'm going to ",
+                        ))
+                        and len(content_str) < 800  # short planning text, not a real final answer
+                    )
+                    # Hallucinated-execution guard: task needs real side effects
+                    # (screenshot, file write/cp, bash) but model produced ZERO tool
+                    # calls and instead faked success JSON (status:success, file_size,
+                    # PNG image data, ls output). Never accept that as final —
+                    # force real execution like Claude Code does.
+                    _tool_msgs_so_far = sum(1 for m in current_msgs if isinstance(m, ToolMessage))
+                    _task_needs_exec = False
+                    try:
+                        _user_goal = ""
+                        for _m in reversed(state.get("messages", []) or []):
+                            if isinstance(_m, HumanMessage):
+                                _user_goal = str(_m.content).lower()
+                                break
+                        _task_needs_exec = any(k in _user_goal for k in (
+                            "screenshot", "capture", "playwright", "save to", "save it",
+                            "copy to", "cp ", "mkdir", "write file", "create file",
+                            "ls ", "verify", "desktop", "download",
+                        ))
+                    except Exception:
+                        _task_needs_exec = False
+                    _claims_success = bool(re.search(
+                        r"(successfully captured|success.{0,20}captured|screenshot.*saved|"
+                        r"file_size|PNG image data|1\.2MB|1920x1080|"
+                        r"\"status\"\s*:\s*\"success\"|results?:\s*\n?.*verification)",
+                        content_str, re.IGNORECASE,
+                    ))
+                    _is_hallucinated_exec = (
+                        _task_needs_exec and _tool_msgs_so_far == 0
+                        and (_claims_success or len(content_str) > 400)
+                        and iteration < 2
+                    )
+                    if _is_planning_only or _is_hallucinated_exec:
+                        # Inject a continuation prompt to push from planning → acting
+                        current_msgs.append(AIMessage(content=content_str))
+                        if _is_hallucinated_exec:
+                            current_msgs.append(HumanMessage(
+                                content=(
+                                    "You produced a text-only success report with ZERO tool executions. "
+                                    "That is fabricated — the files do not exist. Now execute REAL tool calls: "
+                                    "use capture_screenshot(url, output_file) then bash_cli(command=\"ls -lh <file> && file <file>\") to verify. "
+                                    "Only report success with observed ToolMessage output. If the browser extra is missing, report the real error."
+                                )
+                            ))
+                        else:
+                            current_msgs.append(HumanMessage(
+                                content="Good plan. Now execute your tools immediately to fulfill the task. Do not describe what you will do — just call the tools now."
+                            ))
+                        iteration += 1
+                        continue
+                    response = iter_resp
+                    break
+
+                iteration += 1
+                cleaned_text = _clean_tool_call_text(extracted_content)
+                iter_resp.content = cleaned_text
+                iter_resp.tool_calls = tool_calls
+                current_msgs.append(iter_resp)
+
+                for tc in tool_calls:
+                    tc_name = tc.get("name", "")
+                    tc_args = tc.get("args", {})
+                    if not isinstance(tc_args, dict):
+                        try:
+                            tc_args = json.loads(tc_args) if isinstance(tc_args, str) else {}
+                        except Exception:
+                            tc_args = {}
+                    tc_id = tc.get("id") or f"call_{tc_name}_{iteration}"
+
+                    if cb:
+                        cb(agent_name.lower(), json.dumps({"__type__": "tool_call", "name": tc_name, "args": tc_args}))
+                    await asyncio.sleep(0.01)
+
+                    if tc_name in tool_map:
+                        t_out = await asyncio.to_thread(self._invoke_tool_safely, tool_map[tc_name], tc_args, f"{agent_name.capitalize()}Agent")
+                    else:
+                        t_out = f"Tool '{tc_name}' is not registered."
+
+                    if cb:
+                        cb(agent_name.lower(), json.dumps({"__type__": "tool_result", "name": tc_name, "result": str(t_out)}))
+                    await asyncio.sleep(0.01)
+
+                    current_msgs.append(ToolMessage(content=str(t_out), tool_call_id=tc_id, name=tc_name))
+
+                response = iter_resp
+
+            # Synthesis safeguard for multi-step workflows or iteration limits
+            if (iteration >= max_iterations and getattr(response, "tool_calls", None)) or (
+                not str(getattr(response, "content", "") or "").strip() and iteration > 0
+            ):
+                synth_msgs = _compact_context(list(current_msgs), max_messages=16)
+                synth_msgs.append(
+                    SystemMessage(
+                        content="You have executed the required actions. Synthesize all observations, tool outputs, and actions above into a comprehensive, clear, and final response for the user."
+                    )
+                )
+                synth_chunks = []
+                async for chunk in chat_model.astream(synth_msgs):
+                    synth_chunks.append(chunk)
+                    txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                    if txt and cb:
+                        cb(agent_name.lower(), txt)
+                if synth_chunks:
+                    synth_resp = synth_chunks[0]
+                    for c in synth_chunks[1:]:
+                        synth_resp = synth_resp + c
+                    extracted_synth = _extract_chunk_text(getattr(synth_resp, "content", ""))
+                    if extracted_synth.strip():
+                        response = AIMessage(content=extracted_synth)
+
+            # Claude Code resilience: reasoning models (deepseek-r1, etc.)
+            if not str(getattr(response, "content", "") or "").strip():
+                reason_text = ""
+                try:
+                    ak = getattr(response, "additional_kwargs", {}) or {}
+                    for k in ("reasoning", "reasoning_content", "reasoning_details"):
+                        v = ak.get(k)
+                        if isinstance(v, str) and v.strip():
+                            reason_text = v.strip()
+                            break
+                        if isinstance(v, list) and v:
+                            parts = []
+                            for item in v:
+                                if isinstance(item, dict):
+                                    t = item.get("text") or item.get("reasoning") or ""
+                                    if t:
+                                        parts.append(str(t))
+                            if parts:
+                                reason_text = "\n".join(parts).strip()
+                                break
+                    if not reason_text:
+                        meta = getattr(response, "response_metadata", {}) or {}
+                        for k in ("reasoning", "reasoning_content"):
+                            v = meta.get(k)
+                            if isinstance(v, str) and v.strip():
+                                reason_text = v.strip()
+                                break
+                except Exception:
+                    reason_text = ""
+                if reason_text:
+                    response = AIMessage(content=reason_text[:4000])
+                else:
+                    last_msg_txt = str(state["messages"][-1].content) if state.get("messages") else ""
+                    response = AIMessage(
+                        content=(
+                            f"⚠️ **Empty reply from `{active_cfg.model}`** (transient reasoning-model blank — Claude Code retries instead of failing).\n\n"
+                            f"Query was: **{last_msg_txt[:400]}**\n\n"
+                            "Retry once, or switch to a non-reasoning preset:\n"
+                            "- `/model openrouter-free` (`openrouter/free` — verified live)\n"
+                            "- `/model openrouter-free-nemotron` / `/model groq-llama3`\n"
+                        )
+                    )
+
+        except Exception as e:
+            err = str(e)
+            fallback_success = False
+            is_openrouter = (
+                active_cfg.provider == ProviderType.OPENROUTER
+                or getattr(active_cfg.provider, "value", str(active_cfg.provider)).lower() == "openrouter"
+                or "openrouter" in str(active_cfg.api_base or "").lower()
+            )
+            if active_cfg.model != "openrouter/free" and is_openrouter:
+                try:
+                    import os
+                    from ..llm_providers.factory import create_chat_model
+                    fb_key = (
+                        active_cfg.api_key
+                        or os.getenv("OPENROUTER_API_KEY")
+                        or getattr(self.provider_mgr.providers.get("openrouter-free"), "api_key", None)
+                    )
+                    fb_cfg = LLMConfig(
+                        name="openrouter-free-fallback",
+                        provider=ProviderType.OPENROUTER,
+                        model="openrouter/free",
+                        api_key=fb_key,
+                        api_base="https://openrouter.ai/api/v1",
+                        temperature=0.2,
+                        extra_headers={
+                            "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
+                            "X-Title": "ScopeForge Agent Harness",
+                        },
+                    )
+                    fb_model = create_chat_model(fb_cfg)
+                    fb_chunks = []
+                    async for chunk in fb_model.astream(prompt_msgs):
+                        fb_chunks.append(chunk)
+                        txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                        if txt and cb:
+                            cb(agent_name.lower(), txt)
+                    if fb_chunks:
+                        fb_response = fb_chunks[0]
+                        for c in fb_chunks[1:]:
+                            fb_response = fb_response + c
+                        extracted_fb = _extract_chunk_text(getattr(fb_response, "content", ""))
+                        if extracted_fb.strip():
+                            response = AIMessage(content=extracted_fb)
+                            fallback_success = True
+                except Exception:
+                    fallback_success = False
+
+            if not fallback_success:
+                for cand_name, cand_cfg in self.provider_mgr.providers.items():
+                    if cand_name != active_cfg.name and getattr(cand_cfg, "api_key", None):
+                        try:
+                            from ..llm_providers.factory import create_chat_model
+                            cand_model = create_chat_model(cand_cfg)
+                            cand_chunks = []
+                            async for chunk in cand_model.astream(prompt_msgs):
+                                cand_chunks.append(chunk)
+                                txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                                if txt and cb:
+                                    cb(agent_name.lower(), txt)
+                            if cand_chunks:
+                                fb_resp = cand_chunks[0]
+                                for c in cand_chunks[1:]:
+                                    fb_resp = fb_resp + c
+                                ext_txt = _extract_chunk_text(getattr(fb_resp, "content", ""))
+                                if ext_txt.strip():
+                                    response = AIMessage(
+                                        content=(
+                                            f"*[Resilience Failover: automatically switched to `{cand_name}` due to error on `{active_cfg.name}`]*\n\n"
+                                            + ext_txt
+                                        )
+                                    )
+                                    fallback_success = True
+                                    break
+                        except Exception:
+                            continue
+
+            if not fallback_success:
+                err_short = err.splitlines()[0][:600] if err else type(e).__name__
+                last_msg_txt = str(state["messages"][-1].content) if state.get("messages") else ""
+                response = AIMessage(
+                    content=(
+                        f"⚠️ **LLM call failed** (`{active_cfg.name}` / `{active_cfg.model}`): {err_short}\n\n"
+                        f"Query was: **{last_msg_txt[:400]}**\n\n"
+                        "**Fix (pick one):**\n"
+                        f"- `/model` — switch to another configured provider (e.g. `/model 1` or `/model claude`)\n"
+                        f"- `/config set key <API_KEY>` — set key for `{active_cfg.provider.value}`\n"
+                        f"- `/config set model <model_id>` — e.g. `openrouter/free`\n"
+                        f"- `/doctor` — diagnose provider connections and configuration"
+                    )
+                )
+
+        clean_res = _clean_tool_call_text(str(response.content).strip())
+        if not clean_res.strip():
+            clean_res = str(response.content).strip()
+        if response_prefix and not clean_res.startswith(response_prefix):
+            response.content = f"{response_prefix}\n\n{clean_res}"
+
+        else:
+            response.content = clean_res
+
+        response = self.pipeline.run_after_llm(response, {"agent": agent_name.capitalize()})
+        return {
+            "active_agent": agent_name.lower(),
+            "next_step": "end",
+            "messages": [response],
+            "user_preferences": state.get("user_preferences", ""),
+            "rag_context": state.get("rag_context", ""),
+        }
 
     def _build_graph(self):
         builder = StateGraph(AgentState)
@@ -574,280 +1173,37 @@ class MultiAgentSecOpsOrchestrator:
                 "When inspecting large files, use `view_file` which pages up to 250 lines and provides `next_start_line`. "
                 "For large command outputs, pass `output_file='path/to/log'` in `bash_cli` to stream directly to disk without size truncation.\n"
                 "9. DYNAMIC SCOPE ADAPTATION: ScopeGate automatically recognizes target domains, subdomains (*.domain.com), and endpoints from the user's mission. "
-                "You can also dynamically register newly discovered perimeter targets using `add_authorized_scope(target)` to adapt authorization on-the-fly.\n\n"
+                "You can also dynamically register newly discovered perimeter targets using `add_authorized_scope(target)` to adapt authorization on-the-fly.\n"
+                "10. NEVER FABRICATE TOOL OUTPUTS: never invent ```json {\"status\":\"success\"}``` blocks, file sizes (1.2MB), dimensions (1920x1080), "
+                "or `ls`/`file` output in text. Only report files as saved after a real ToolMessage from capture_screenshot/bash_cli confirms it. "
+                "Correct tools: capture_screenshot(url, output_file) for websites (NOT playwright_automation/screenshot_tool), "
+                "bash_cli(command=\"ls -lh <file> && file <file>\") for verification (NOT bash_cli --command=). "
+                "If capture_screenshot reports browser extra missing, surface that real error — do not fake a PNG.\n\n"
                 f"{proj_rules}\n{user_prefs}\n{rag_info}\n{skills_info}"
             )
-            prompt_msgs = [SystemMessage(content=sys_prompt)] + list(state["messages"][-5:])
-            prompt_msgs = self.pipeline.run_before_llm(prompt_msgs, {"agent": "Supervisor"})
-
             all_tools = list(ALL_SUITE_TOOLS) + self._get_orchestrator_tools() + list(self.mcp.get_langchain_tools())
-            tool_map = {getattr(t, "name", str(t)): t for t in all_tools}
-
-            # Autonomous tool binding for real LLMs (Claude / DeepSeek / OpenAI / OpenRouter)
-            model_to_call = chat_model
-            if not is_mock and hasattr(chat_model, "bind_tools"):
-                try:
-                    model_to_call = chat_model.bind_tools(all_tools)
-                except Exception:
-                    model_to_call = chat_model
-
-            def _extract_chunk_text(chunk_content: Any) -> str:
-                if not chunk_content:
-                    return ""
-                if isinstance(chunk_content, str):
-                    return chunk_content
-                if isinstance(chunk_content, list):
-                    parts = []
-                    for p in chunk_content:
-                        if isinstance(p, str):
-                            parts.append(p)
-                        elif isinstance(p, dict):
-                            parts.append(str(p.get("text") or p.get("content") or ""))
-                    return "".join(parts)
-                return str(chunk_content)
-
-            cb = _stream_callback_var.get()
-            try:
-                current_msgs = list(prompt_msgs)
-                max_iterations = state.get("max_iterations") or 25
-                iteration = 0
-                response = AIMessage(content="")
-
-                while iteration < max_iterations:
-                    # Context window compaction safeguard for multi-iteration long-running tasks
-                    current_msgs = _compact_context(current_msgs, max_messages=18)
-
-                    full_chunks = []
-                    async for chunk in model_to_call.astream(current_msgs):
-                        full_chunks.append(chunk)
-                        txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                        if txt and cb:
-                            cb("supervisor", txt)
-
-                    if full_chunks:
-                        iter_resp = full_chunks[0]
-                        for c in full_chunks[1:]:
-                            iter_resp = iter_resp + c
-                    else:
-                        iter_resp = AIMessage(content="")
-
-                    extracted_content = _extract_chunk_text(getattr(iter_resp, "content", ""))
-                    if extracted_content:
-                        iter_resp.content = extracted_content
-
-                    tool_calls = getattr(iter_resp, "tool_calls", None) or []
-                    if not tool_calls:
-                        response = iter_resp
-                        break
-
-                    iteration += 1
-                    current_msgs.append(iter_resp)
-
-                    for tc in tool_calls:
-                        tc_name = tc.get("name", "")
-                        tc_args = tc.get("args", {})
-                        if not isinstance(tc_args, dict):
-                            try:
-                                tc_args = json.loads(tc_args) if isinstance(tc_args, str) else {}
-                            except Exception:
-                                tc_args = {}
-                        tc_id = tc.get("id") or f"call_{tc_name}_{iteration}"
-
-                        if cb:
-                            cb("supervisor", json.dumps({"__type__": "tool_call", "name": tc_name, "args": tc_args}))
-                        await asyncio.sleep(0.01)
-
-                        if tc_name in tool_map:
-                            t_out = await asyncio.to_thread(self._invoke_tool_safely, tool_map[tc_name], tc_args, "Supervisor")
-                        else:
-                            t_out = f"Tool '{tc_name}' is not registered."
-
-                        if cb:
-                            cb("supervisor", json.dumps({"__type__": "tool_result", "name": tc_name, "result": str(t_out)}))
-                        await asyncio.sleep(0.01)
-
-                        current_msgs.append(ToolMessage(content=str(t_out), tool_call_id=tc_id, name=tc_name))
-
-                    response = iter_resp
-
-                # Synthesis safeguard for multi-step workflows or iteration limits
-                if (iteration >= max_iterations and getattr(response, "tool_calls", None)) or (
-                    not str(getattr(response, "content", "") or "").strip() and iteration > 0
-                ):
-                    synth_msgs = _compact_context(list(current_msgs), max_messages=16)
-                    synth_msgs.append(
-                        SystemMessage(
-                            content="You have executed the required actions. Synthesize all observations, tool outputs, and actions above into a comprehensive, clear, and final response for the user."
-                        )
-                    )
-                    synth_chunks = []
-                    async for chunk in chat_model.astream(synth_msgs):
-                        synth_chunks.append(chunk)
-                        txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                        if txt and cb:
-                            cb("supervisor", txt)
-                    if synth_chunks:
-                        synth_resp = synth_chunks[0]
-                        for c in synth_chunks[1:]:
-                            synth_resp = synth_resp + c
-                        extracted_synth = _extract_chunk_text(getattr(synth_resp, "content", ""))
-                        if extracted_synth.strip():
-                            response = AIMessage(content=extracted_synth)
-
-                # Claude Code resilience: reasoning models (deepseek-r1, etc.)
-                # sometimes return empty `content` with reasoning in a separate
-                # field that LangChain drops (transient `stopstop`). Never surface
-                # a blank bubble like the TUI did for `openrouter/free`-adjacent
-                # reasoning presets — fall back to reasoning text or retry hint.
-                if not str(getattr(response, "content", "") or "").strip():
-                    reason_text = ""
-                    try:
-                        ak = getattr(response, "additional_kwargs", {}) or {}
-                        # OpenAI-style reasoning fields LangChain may preserve
-                        for k in ("reasoning", "reasoning_content", "reasoning_details"):
-                            v = ak.get(k)
-                            if isinstance(v, str) and v.strip():
-                                reason_text = v.strip()
-                                break
-                            if isinstance(v, list) and v:
-                                parts = []
-                                for item in v:
-                                    if isinstance(item, dict):
-                                        t = item.get("text") or item.get("reasoning") or ""
-                                        if t:
-                                            parts.append(str(t))
-                                if parts:
-                                    reason_text = "\n".join(parts).strip()
-                                    break
-                        if not reason_text:
-                            meta = getattr(response, "response_metadata", {}) or {}
-                            for k in ("reasoning", "reasoning_content"):
-                                v = meta.get(k)
-                                if isinstance(v, str) and v.strip():
-                                    reason_text = v.strip()
-                                    break
-                    except Exception:
-                        reason_text = ""
-                    if reason_text:
-                        response = AIMessage(content=reason_text[:4000])
-                    else:
-                        response = AIMessage(
-                            content=(
-                                f"⚠️ **Empty reply from `{active_cfg.model}`** (transient reasoning-model blank — Claude Code retries instead of failing).\n\n"
-                                f"Query was: **{str(last_message)[:400]}**\n\n"
-                                "Retry once, or switch to a non-reasoning preset:\n"
-                                "- `/model openrouter-free` (`openrouter/free` — verified live)\n"
-                                "- `/model openrouter-free-nemotron` / `/model groq-llama3`\n"
-                                "- Reasoning models sometimes return reasoning-only chunks; retry usually succeeds."
-                            )
-                        )
-            except Exception as e:
-                err = str(e)
-                # Automatic Resilience: If a model fails with 429 rate limit or 404/402,
-                # auto-fallback to the resilient openrouter/free meta-router.
-                fallback_success = False
-                is_openrouter = (
-                    active_cfg.provider == ProviderType.OPENROUTER
-                    or getattr(active_cfg.provider, "value", str(active_cfg.provider)).lower() == "openrouter"
-                    or "openrouter" in str(active_cfg.api_base or "").lower()
-                )
-                if active_cfg.model != "openrouter/free" and is_openrouter:
-                    try:
-                        import os
-                        from ..llm_providers.factory import create_chat_model
-                        fb_key = (
-                            active_cfg.api_key
-                            or os.getenv("OPENROUTER_API_KEY")
-                            or getattr(self.provider_mgr.providers.get("openrouter-free"), "api_key", None)
-                        )
-                        fb_cfg = LLMConfig(
-                            name="openrouter-free-fallback",
-                            provider=ProviderType.OPENROUTER,
-                            model="openrouter/free",
-                            api_key=fb_key,
-                            api_base="https://openrouter.ai/api/v1",
-                            temperature=0.2,
-                            extra_headers={
-                                "HTTP-Referer": "https://github.com/rajboopathiking/ScopeForge",
-                                "X-Title": "ScopeForge Agent Harness",
-                            },
-                        )
-                        fb_model = create_chat_model(fb_cfg)
-                        fb_chunks = []
-                        async for chunk in fb_model.astream(prompt_msgs):
-                            fb_chunks.append(chunk)
-                            txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                            if txt and cb:
-                                cb("supervisor", txt)
-                        if fb_chunks:
-                            fb_response = fb_chunks[0]
-                            for c in fb_chunks[1:]:
-                                fb_response = fb_response + c
-                            extracted_fb = _extract_chunk_text(getattr(fb_response, "content", ""))
-                            if extracted_fb.strip():
-                                response = AIMessage(content=extracted_fb)
-                                fallback_success = True
-                    except Exception:
-                        fallback_success = False
-
-                if not fallback_success:
-                    # Automatic Resilience: If primary model failed (e.g. 429 Rate Limit),
-                    # attempt failover to other configured providers with valid credentials
-                    for cand_name, cand_cfg in self.provider_mgr.providers.items():
-                        if cand_name != active_cfg.name and getattr(cand_cfg, "api_key", None):
-                            try:
-                                from ..llm_providers.factory import create_chat_model
-                                cand_model = create_chat_model(cand_cfg)
-                                cand_chunks = []
-                                async for chunk in cand_model.astream(prompt_msgs):
-                                    cand_chunks.append(chunk)
-                                    txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                                    if txt and cb:
-                                        cb("supervisor", txt)
-                                if cand_chunks:
-                                    fb_resp = cand_chunks[0]
-                                    for c in cand_chunks[1:]:
-                                        fb_resp = fb_resp + c
-                                    ext_txt = _extract_chunk_text(getattr(fb_resp, "content", ""))
-                                    if ext_txt.strip():
-                                        response = AIMessage(
-                                            content=(
-                                                f"*[Resilience Failover: automatically switched to `{cand_name}` due to error on `{active_cfg.name}`]*\n\n"
-                                                + ext_txt
-                                            )
-                                        )
-                                        fallback_success = True
-                                        break
-                            except Exception:
-                                continue
-
-                if not fallback_success:
-                    err_short = err.splitlines()[0][:600] if err else type(e).__name__
-                    response = AIMessage(
-                        content=(
-                            f"⚠️ **LLM call failed** (`{active_cfg.name}` / `{active_cfg.model}`): {err_short}\n\n"
-                            f"Query was: **{str(last_message)[:400]}**\n\n"
-                            "**Fix (pick one):**\n"
-                            f"- `/model` — switch to another configured provider (e.g. `/model 1` or `/model claude`)\n"
-                            f"- `/config set key <API_KEY>` — set key for `{active_cfg.provider.value}`\n"
-                            f"- `/config set model <model_id>` — e.g. `openrouter/free`\n"
-                            f"- `/doctor` — diagnose provider connections and configuration"
-                        )
-                    )
-            response = self.pipeline.run_after_llm(response, {"agent": "Supervisor"})
-
-            return {
-                "active_agent": "supervisor",
-                "next_step": "end",
-                "messages": [response],
-                "user_preferences": user_prefs,
-                "rag_context": rag_info,
-            }
+            res = await self._execute_react_agent_loop(
+                agent_name="supervisor",
+                system_prompt=sys_prompt,
+                tools=all_tools,
+                state=state,
+                max_iterations=state.get("max_iterations") or 25,
+            )
+            res["user_preferences"] = user_prefs
+            res["rag_context"] = rag_info
+            return res
 
 
         async def recon_node(state: AgentState) -> Dict[str, Any]:
             last_message = str(state["messages"][-1].content)
-            
+            chat_model = self.provider_mgr.get_chat_model()
+            active_cfg = self.provider_mgr.get_active_config()
+            is_mock = (
+                getattr(chat_model, "is_mock", False)
+                or active_cfg.provider == ProviderType.MOCK
+                or "mock" in str(getattr(chat_model, "model_name", "")).lower()
+            )
+
             # Dynamic target extraction: check query for IP or hostname
             target = "authorized.example"
             import re
@@ -861,7 +1217,37 @@ class MultiAgentSecOpsOrchestrator:
                         break
 
             m_ports = re.search(r"\bports?\s*[:=]?\s*([0-9][0-9,\s-]*)", last_message, re.IGNORECASE)
-            ports = m_ports.group(1).replace(" ", "") if m_ports else "80,443,8080"
+            ports = m_ports.group(1).replace(" ", "").rstrip(",-") if m_ports else "80,443,8080"
+
+
+            if not is_mock:
+                recon_tools = [recon_port_scan, web_surface_probe, google_web_search]
+                recon_prompt = (
+                    "You are ReconAgent — ScopeForge's perimeter reconnaissance and asset mapping specialist.\n\n"
+                    f"Target asset: {target}\n"
+                    f"Queried ports: {ports}\n\n"
+                    "You have tools for port scanning (recon_port_scan), web surface probing (web_surface_probe), "
+                    "and online searches (google_web_search).\n"
+                    "Execute your reconnaissance tools sequentially, analyze the findings, and synthesize telemetry.\n"
+                    f"Always explicitly state the scanned target `{target}` and queried ports `{ports}` in your assessment summary.\n"
+                    f"Prefix your final response with '### [ReconAgent] Perimeter Assessment for `{target}` (Ports: {ports})'."
+                )
+                a2a_msg = self.a2a_bus.send(
+                    sender="ReconAgent",
+                    recipient="AuditAgent",
+                    intent=A2AIntent.TASK_RESULT,
+                    payload={"target": target, "ports": ports, "status": "Ports and perimeter mapped", "findings_count": 2},
+                )
+                res = await self._execute_react_agent_loop(
+                    agent_name="recon",
+                    system_prompt=recon_prompt,
+                    tools=recon_tools,
+                    state=state,
+                    max_iterations=state.get("max_iterations") or 25,
+                    response_prefix=f"### [ReconAgent] Perimeter Assessment for `{target}` (Ports: {ports})",
+                )
+                res["a2a_log"] = state.get("a2a_log", []) + [a2a_msg.model_dump()]
+                return res
 
             # Execute recon tools with middleware protection
             scan_out = await asyncio.to_thread(self._invoke_tool_safely, recon_port_scan, {"target": target, "ports": ports}, "ReconAgent")
@@ -891,14 +1277,53 @@ class MultiAgentSecOpsOrchestrator:
 
         async def audit_node(state: AgentState) -> Dict[str, Any]:
             last_message = str(state["messages"][-1].content)
-            sample_code = "query = f'SELECT * FROM users WHERE user_id = {user_input}'\ncursor.execute(query)"
+            chat_model = self.provider_mgr.get_chat_model()
+            active_cfg = self.provider_mgr.get_active_config()
+            is_mock = (
+                getattr(chat_model, "is_mock", False)
+                or active_cfg.provider == ProviderType.MOCK
+                or "mock" in str(getattr(chat_model, "model_name", "")).lower()
+            )
 
+            # Extract CVE and code early (used by both mock and non-mock paths)
             import re
-            m_code = re.search(r"```(?:[a-zA-Z0-9_-]+)?\s*\n(.*?)\n```", last_message, re.DOTALL)
             m_cve = re.search(r"(CVE-\d{4}-\d{4,7})", last_message, re.IGNORECASE)
             cve_query = m_cve.group(1).upper() if m_cve else "CVE-2024-3400"
 
+            if not is_mock:
+                audit_tools = [sast_code_audit, cve_advisory_search, view_file, grep_search]
+                audit_prompt = (
+                    "You are AuditAgent — ScopeForge's code auditing and vulnerability correlation specialist.\n\n"
+                    f"CVE target for this audit: {cve_query}\n\n"
+                    "You have tools for static code analysis (sast_code_audit), CVE database correlation (cve_advisory_search), "
+                    "file viewing (view_file), and grep searching (grep_search).\n"
+                    "Execute your audit tools sequentially and synthesize verified findings.\n"
+                    f"Always mention the CVE identifier `{cve_query}` explicitly in your response summary.\n"
+                    f"Prefix your final response with '### [AuditAgent] Vulnerability Analysis & SAST Audit — {cve_query}'."
+                )
+                a2a_msg = self.a2a_bus.send(
+                    sender="AuditAgent",
+                    recipient="ExploitAgent",
+                    intent=A2AIntent.EVIDENCE_SHARING,
+                    payload={"task": last_message, "status": "Audit completed"},
+                )
+                res = await self._execute_react_agent_loop(
+                    agent_name="audit",
+                    system_prompt=audit_prompt,
+                    tools=audit_tools,
+                    state=state,
+                    max_iterations=state.get("max_iterations") or 25,
+                    response_prefix=f"### [AuditAgent] Vulnerability Analysis & SAST Audit — {cve_query}",
+                )
+                res["a2a_log"] = state.get("a2a_log", []) + [a2a_msg.model_dump()]
+                return res
+
+            sample_code = "query = f'SELECT * FROM users WHERE user_id = {user_input}'\ncursor.execute(query)"
+
+            m_code = re.search(r"```(?:[a-zA-Z0-9_-]+)?\s*\n(.*?)\n```", last_message, re.DOTALL)
+
             code_to_audit = m_code.group(1) if m_code else sample_code
+
 
             # Execute SAST and CVE tools with middleware
             sast_out = await asyncio.to_thread(self._invoke_tool_safely, sast_code_audit, {"code_snippet_or_file": code_to_audit}, "AuditAgent")
@@ -1013,6 +1438,136 @@ class MultiAgentSecOpsOrchestrator:
         async def dev_node(state: AgentState) -> Dict[str, Any]:
             last_message = str(state["messages"][-1].content)
             last_lower = last_message.lower()
+
+            chat_model = self.provider_mgr.get_chat_model()
+            active_cfg = self.provider_mgr.get_active_config()
+            is_mock = (
+                getattr(chat_model, "is_mock", False)
+                or active_cfg.provider == ProviderType.MOCK
+                or "mock" in str(getattr(chat_model, "model_name", "")).lower()
+            )
+
+            # Fast-path: $ / ! prefix or explicit bash/terminal commands run bash_cli DIRECTLY
+            # (bypasses LLM loop to guarantee deterministic output regardless of active provider)
+            _raw = last_message.strip()
+            _is_direct_shell = (
+                _raw.startswith("$ ")
+                or _raw.startswith("!")
+                or _raw.startswith("cd ")
+                or last_lower.startswith("/bash ")
+                or any(k in last_lower for k in ("run command", "execute command"))
+            )
+            if _is_direct_shell:
+                cmd = _raw
+                if cmd.startswith("$ "):
+                    cmd = cmd[2:].strip()
+                elif cmd.startswith("!"):
+                    cmd = cmd[1:].strip()
+                elif last_lower.startswith("/bash "):
+                    cmd = last_message[6:].strip()
+                cmd_out = await asyncio.to_thread(self._invoke_tool_safely, bash_cli, {"command": cmd}, "DevAgent")
+                try:
+                    res_j = json.loads(cmd_out)
+                    out_text = res_j.get("stdout") or res_j.get("stderr") or res_j.get("error") or "Executed successfully with no output."
+                    rc = res_j.get("return_code", 0 if res_j.get("success") else 1)
+                    output = f"💻 **Sandbox Terminal Command:** `{cmd}`\n```text\n{out_text}\n```\n*Return Code:* `{rc}`"
+                except Exception:
+                    output = f"💻 **Executed Sandbox Command:** `{cmd}`\n```json\n{cmd_out}\n```"
+                a2a_msg = self.a2a_bus.send(
+                    sender="DevAgent",
+                    recipient="Supervisor",
+                    intent=A2AIntent.TASK_RESULT,
+                    payload={"task": last_message, "status": "COMPLETED"},
+                )
+                response_text = (
+                    f"### [DevAgent] Code Workspace & Developer Operations\n\n"
+                    f"{output}\n\n"
+                    "-> Completed developer tooling request within local sandbox."
+                )
+                return {
+                    "active_agent": "dev",
+                    "next_step": "end",
+                    "messages": [AIMessage(content=response_text)],
+                    "a2a_log": state.get("a2a_log", []) + [a2a_msg.model_dump()],
+                }
+
+            # Fast-path: web search queries call google_web_search DIRECTLY to guarantee
+            # deterministic "Web Search Results" output regardless of active LLM provider.
+            _is_web_search = any(k in last_lower for k in (
+                "search the web", "web search", "google search", "search online",
+                "lookup online", "search for", "find online", "/search", "/web",
+            )) and not any(k in last_lower for k in ("grep", "code search", "sast", "cve"))
+            if _is_web_search:
+                q = last_message
+                for prefix in ("/search", "/web", "/google", "search the web for", "search online for",
+                               "web search for", "google for", "google", "search for", "search", "lookup"):
+                    if last_lower.startswith(prefix):
+                        q = last_message[len(prefix):].strip(" :\"'")
+                        break
+                search_raw = await asyncio.to_thread(
+                    self._invoke_tool_safely, google_web_search,
+                    {"query": q or last_message, "max_results": 5}, "DevAgent"
+                )
+                try:
+                    search_res = json.loads(search_raw)
+                    hits = search_res.get("results", [])
+                    if hits:
+                        cards = [
+                            f"- **[{h.get('title')}]({h.get('url')})**\n  {h.get('snippet')}\n  `{h.get('url')}`"
+                            for h in hits
+                        ]
+                        output = f"🌐 **Web Search Results for '{q or last_message}':**\n\n" + "\n\n".join(cards)
+                    else:
+                        output = f"🌐 **Web Search Results** — No live results found for: `{q or last_message}`"
+                except Exception:
+                    output = f"🌐 **Web Search Results**\n```json\n{search_raw}\n```"
+                a2a_msg = self.a2a_bus.send(
+                    sender="DevAgent",
+                    recipient="Supervisor",
+                    intent=A2AIntent.TASK_RESULT,
+                    payload={"task": last_message, "status": "COMPLETED"},
+                )
+                response_text = (
+                    f"### [DevAgent] Code Workspace & Developer Operations\n\n"
+                    f"{output}\n\n"
+                    "-> Completed web search request."
+                )
+                return {
+                    "active_agent": "dev",
+                    "next_step": "end",
+                    "messages": [AIMessage(content=response_text)],
+                    "a2a_log": state.get("a2a_log", []) + [a2a_msg.model_dump()],
+                }
+
+            # LIVE autonomous ReAct loop for DevAgent when connected to a real LLM
+            if not is_mock:
+                dev_tools = list(ALL_CODE_TOOLS) + list(self.mcp.get_langchain_tools())
+                dev_prompt = (
+                    "You are DevAgent — ScopeForge's dedicated code workspace and developer operations agent.\n\n"
+                    "You have direct execution capabilities to view files, edit files, write files, glob directory trees, "
+                    "grep codebases, run bash commands in terminal, inspect git status/diff, and execute web searches.\n\n"
+                    "BEHAVIOR RULES:\n"
+                    "1. Execute each step sequentially using your tools until the user's objective is fully accomplished.\n"
+                    "2. Never ask the user to run commands or edit files when you can do it directly with your tools.\n"
+                    "3. Format diffs, code changes, and execution results clearly in markdown.\n"
+                    "4. Prefix your final comprehensive response with '### [DevAgent] Code Workspace & Developer Operations'."
+                )
+                a2a_msg = self.a2a_bus.send(
+                    sender="DevAgent",
+                    recipient="Supervisor",
+                    intent=A2AIntent.TASK_RESULT,
+                    payload={"task": last_message, "status": "COMPLETED"},
+                )
+                res = await self._execute_react_agent_loop(
+                    agent_name="dev",
+                    system_prompt=dev_prompt,
+                    tools=dev_tools,
+                    state=state,
+                    max_iterations=state.get("max_iterations") or 25,
+                    response_prefix="### [DevAgent] Code Workspace & Developer Operations",
+                )
+                res["a2a_log"] = state.get("a2a_log", []) + [a2a_msg.model_dump()]
+                return res
 
             output = ""
             # 1. Skill installation from repository

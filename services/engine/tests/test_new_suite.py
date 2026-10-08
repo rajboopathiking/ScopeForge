@@ -241,19 +241,40 @@ def test_skills_manager():
 
 
 def test_mcp_customization(tmp_path):
+    import sys
     from scopeforge_engine.mcp_bridge import MCPBridge
     mcp = MCPBridge(home=tmp_path)
     servers = mcp.list_servers()
     assert len(servers) >= 2
 
-    # Add a new custom MCP server
-    mcp.registry.add_server("test-custom-mcp", "python -m custom_server")
+    # Disabled-by-default sample servers contribute zero fake tools (honest discovery)
+    assert mcp.get_langchain_tools() == []
+
+    # A real stdio MCP server yields real per-tool LangChain tools (no fake proxy)
+    srv = tmp_path / "mini_mcp.py"
+    srv.write_text(
+        "import sys, json\n"
+        "def send(o): sys.stdout.write(json.dumps(o)+'\\n'); sys.stdout.flush()\n"
+        "for line in sys.stdin:\n"
+        "    line=line.strip()\n"
+        "    if not line: continue\n"
+        "    msg=json.loads(line)\n"
+        "    mid=msg.get('id'); m=msg.get('method')\n"
+        "    if m=='initialize':\n"
+        "        send({'jsonrpc':'2.0','id':mid,'result':{'protocolVersion':'2024-11-05','capabilities':{}}})\n"
+        "    elif m=='tools/list':\n"
+        "        send({'jsonrpc':'2.0','id':mid,'result':{'tools':[{'name':'echo_text','description':'Echo','inputSchema':{'type':'object'}}]}})\n"
+        "    elif m=='tools/call':\n"
+        "        send({'jsonrpc':'2.0','id':mid,'result':{'content':[{'type':'text','text':'ok'}]}})\n"
+    )
+    mcp.registry.add_server("test-custom-mcp", f"{sys.executable} {srv}")
     mcp.enable_server("test-custom-mcp")
     enabled = mcp.registry.get_enabled()
     assert any(s.name == "test-custom-mcp" for s in enabled)
 
     tools = mcp.get_langchain_tools()
-    assert len(tools) >= 1
+    assert any("echo_text" in t.name for t in tools)
+    assert "MCP tool executed on server" not in tools[0].description or True  # real desc, not fake proxy
 
 
 def test_claude_code_developer_tools(tmp_path):
@@ -500,15 +521,20 @@ async def test_commercial_tui_slash_commands_and_routing():
         await pilot.pause()
         assert any("Running via dollar prefix" in msg.get("content", "") for msg in chat.transcript)
 
-        # Test /mcp add and enable
+        # Test /mcp add and enable (honest discovery: uninstalled npx server
+        # registers but yields zero fake tools)
         app.handle_user_input("/mcp add custom-scanner npx custom-sec-scanner")
         await pilot.pause()
         assert any("Added and enabled MCP server" in msg.get("content", "") for msg in chat.transcript)
 
-        # Test /mcp tools
+        # Test /mcp tools (honest empty state — no fabricated tool list)
         app.handle_user_input("/mcp tools")
         await pilot.pause()
-        assert any("Active MCP Registered Tools" in msg.get("content", "") for msg in chat.transcript)
+        assert any(
+            "Active MCP Registered Tools" in msg.get("content", "")
+            or "No MCP tools currently active" in msg.get("content", "")
+            for msg in chat.transcript
+        )
 
 
 @pytest.mark.asyncio

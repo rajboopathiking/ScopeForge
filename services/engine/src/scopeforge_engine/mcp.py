@@ -134,16 +134,171 @@ class MCPClient:
     def __init__(self, registry: MCPRegistry) -> None:
         self.registry = registry
 
-    async def list_tools(self, server: MCPServer) -> list[MCPTool]:
-        """Discover tools from a single enabled server via JSON-RPC."""
+    @staticmethod
+    def _split_command(command: str) -> list[str]:
+        import shlex
+
+        parts = shlex.split(command.strip())
+        if not parts:
+            raise ValueError("empty MCP server command")
+        return parts
+
+    @staticmethod
+    def _stdio_request(argv: list[str], payloads: list[dict], timeout_s: float = 20.0) -> list[dict]:
+        """Spawn stdio server, send newline-delimited JSON-RPC, read replies.
+
+        MCP stdio servers speak JSON-RPC over stdin/stdout (one message per line).
+        Returns list of parsed response objects (in order); raises on spawn/timeout.
+        """
+        import subprocess
+
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            stdin_data = "".join(json.dumps(p) + "\n" for p in payloads)
+            try:
+                out, err = proc.communicate(input=stdin_data, timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+                raise TimeoutError(f"MCP stdio server timed out after {timeout_s}s: {' '.join(argv[:3])}")
+            responses: list[dict] = []
+            for line in (out or "").splitlines():
+                line = line.strip()
+                if not line or not line.startswith("{"):
+                    continue
+                try:
+                    responses.append(json.loads(line))
+                except Exception:
+                    continue
+            return responses
+        finally:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except Exception:
+                pass
+
+    def _stdio_handshake(self, server: MCPServer, timeout_s: float = 20.0) -> None:
+        argv = self._split_command(server.command)
+        init = {
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "scopeforge", "version": "0.1.0"},
+            },
+        }
+        # Initialized notification has no id per JSON-RPC
+        notified = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        self._stdio_request(argv, [init, notified], timeout_s=timeout_s)
+
+    def list_tools_sync(self, server: MCPServer, timeout_s: float = 20.0) -> list[MCPTool]:
+        """Synchronous stdio/HTTP discovery (used by LangChain sync tool path)."""
+        if server.command.strip().startswith("http"):
+            import asyncio as _aio
+
+            try:
+                return _aio.run(self._list_tools_http(server))
+            except RuntimeError:
+                # Already inside a running loop (agent thread) — run in fresh thread
+                import concurrent.futures as _cf
+
+                with _cf.ThreadPoolExecutor(max_workers=1) as ex:
+                    return ex.submit(_aio.run, self._list_tools_http(server)).result(timeout=timeout_s)
+        argv = self._split_command(server.command)
+        init = {
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "scopeforge", "version": "0.1.0"},
+            },
+        }
+        notified = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        lst = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        try:
+            resps = self._stdio_request(argv, [init, notified, lst], timeout_s=timeout_s)
+        except Exception:
+            return []
+        tools: list[MCPTool] = []
+        for r in resps:
+            if r.get("id") != 1:
+                continue
+            for t in (r.get("result", {}) or {}).get("tools", []) or []:
+                name = str(t.get("name", ""))
+                if not name:
+                    continue
+                if server.allowed_tools and name not in server.allowed_tools:
+                    continue
+                tools.append(MCPTool(
+                    name=name,
+                    description=_sanitize_description(str(t.get("description", ""))),
+                    input_schema=t.get("inputSchema", t.get("input_schema", {})) or {},
+                    server=server.name,
+                    untrusted=True,
+                ))
+        return tools
+
+    def call_tool_sync(self, server: MCPServer, tool_name: str, arguments: dict, timeout_s: float = 60.0) -> dict:
+        """Synchronous MCP tools/call over stdio/HTTP. Raises on policy/timeout."""
+        if server.allowed_tools and tool_name not in server.allowed_tools:
+            raise PermissionError(f"tool {tool_name!r} not in allowlist for {server.name!r}")
+        if not server.enabled:
+            raise PermissionError(f"server {server.name!r} is not enabled")
+        if server.command.strip().startswith("http"):
+            import asyncio as _aio
+
+            try:
+                return _aio.run(self._call_tool_http(server, tool_name, arguments))
+            except RuntimeError:
+                import concurrent.futures as _cf
+
+                with _cf.ThreadPoolExecutor(max_workers=1) as ex:
+                    return ex.submit(_aio.run, self._call_tool_http(server, tool_name, arguments)).result(timeout=timeout_s)
+        argv = self._split_command(server.command)
+        init = {
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "scopeforge", "version": "0.1.0"},
+            },
+        }
+        notified = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments or {}}}
+        resps = self._stdio_request(argv, [init, notified, call], timeout_s=timeout_s)
+        for r in resps:
+            if r.get("id") == 2:
+                if "error" in r and r["error"]:
+                    raise RuntimeError(f"MCP {server.name}/{tool_name} error: {r['error']}")
+                return sanitize_mcp_result(r.get("result", {}))
+        raise RuntimeError(f"MCP {server.name}/{tool_name}: no response (server exited?)")
+
+    async def _call_tool_http(self, server: MCPServer, tool_name: str, arguments: dict) -> dict:
         import httpx
 
-        # For stdio transport, we spawn; for HTTP, we POST to command as URL
-        # Simplified: treat command as HTTP endpoint if it starts with http
-        if server.command.startswith("http"):
-            return await self._list_tools_http(server)
-        # Stdio path: would spawn subprocess — stub for now, returns empty with warning
-        return []
+        payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                   "params": {"name": tool_name, "arguments": arguments}}
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(server.command, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        if isinstance(data, dict) and data.get("error"):
+            raise RuntimeError(f"MCP {server.name}/{tool_name} error: {data['error']}")
+        return sanitize_mcp_result(data.get("result", data))
+
+    async def list_tools(self, server: MCPServer) -> list[MCPTool]:
+        """Discover tools from a single enabled server via JSON-RPC (async wrapper)."""
+        import asyncio as _aio
+
+        return await _aio.to_thread(self.list_tools_sync, server)
 
     async def _list_tools_http(self, server: MCPServer) -> list[MCPTool]:
         import httpx
@@ -171,21 +326,10 @@ class MCPClient:
         return tools
 
     async def call_tool(self, server: MCPServer, tool_name: str, arguments: dict) -> dict:
-        """Call a tool on an enabled server. Only allowed tools."""
-        if server.allowed_tools and tool_name not in server.allowed_tools:
-            raise PermissionError(f"tool {tool_name!r} not in allowlist for {server.name!r}")
-        if not server.enabled:
-            raise PermissionError(f"server {server.name!r} is not enabled")
-        import httpx
+        """Call a tool on an enabled server. Only allowed tools (async wrapper)."""
+        import asyncio as _aio
 
-        payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                   "params": {"name": tool_name, "arguments": arguments}}
-        if server.command.startswith("http"):
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(server.command, json=payload)
-                resp.raise_for_status()
-                return resp.json()
-        raise NotImplementedError("stdio MCP transport not yet implemented (use HTTP endpoint)")
+        return await _aio.to_thread(self.call_tool_sync, server, tool_name, arguments)
 
 
 def sanitize_mcp_result(result: dict) -> dict:

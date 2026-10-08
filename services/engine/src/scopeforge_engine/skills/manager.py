@@ -105,6 +105,15 @@ class SkillManager:
         """Return all discovered skills."""
         return list(self.skills.values())
 
+    def reload(self) -> Dict[str, int]:
+        """Rescan disk (future skill/MCP additions apply without restart)."""
+        before = set(self.skills)
+        self._load_all()
+        # Drop activations for deleted skills (stale state never persists)
+        self.active_skills = {n for n in self.active_skills if n in self.skills}
+        after = set(self.skills)
+        return {"loaded": len(after), "added": len(after - before), "removed": len(before - after)}
+
     def get_skill(self, name: str) -> Optional[Skill]:
         """Get skill by name."""
         return self.skills.get(name)
