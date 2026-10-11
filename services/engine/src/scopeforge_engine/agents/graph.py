@@ -1147,6 +1147,20 @@ class MultiAgentSecOpsOrchestrator:
                 full_chunks = []
                 accumulated_stream = ""
 
+                fallback_msgs = []
+                for m in current_msgs:
+                    if isinstance(m, ToolMessage):
+                        fallback_msgs.append(HumanMessage(content=f"[Tool Observation for '{getattr(m, 'name', 'tool')}']:\n{m.content}"))
+                    elif isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+                        clean_c = m.content or f"Action: {m.tool_calls[0].get('name') if m.tool_calls else 'tool'}"
+                        fallback_msgs.append(AIMessage(content=clean_c))
+                    else:
+                        fallback_msgs.append(m)
+
+                stream_err_occurred = False
+                last_stream_err = None
+
+                # Attempt 1: Stream using current model_to_call
                 try:
                     async for chunk in model_to_call.astream(current_msgs):
                         full_chunks.append(chunk)
@@ -1160,26 +1174,69 @@ class MultiAgentSecOpsOrchestrator:
                                 )):
                                     cb(agent_name.lower(), txt)
                 except Exception as stream_err:
-                    err_str = str(stream_err).lower()
-                    if iteration > 0 and any(k in err_str for k in ("tool", "role", "tool_call_id", "400", "bad request", "schema")):
-                        fallback_msgs = []
-                        for m in current_msgs:
-                            if isinstance(m, ToolMessage):
-                                fallback_msgs.append(HumanMessage(content=f"[Tool Observation for '{getattr(m, 'name', 'tool')}']:\n{m.content}"))
-                            elif isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
-                                clean_c = m.content or f"Action: {m.tool_calls[0].get('name') if m.tool_calls else 'tool'}"
-                                fallback_msgs.append(AIMessage(content=clean_c))
-                            else:
-                                fallback_msgs.append(m)
-                        full_chunks = []
-                        async for chunk in chat_model.astream(fallback_msgs):
+                    stream_err_occurred = True
+                    last_stream_err = stream_err
+
+                # Attempt 2: If 0 chunks returned or stream raised an error (e.g. "No generation chunks were returned"
+                # due to proxy failing on native OpenAI tools payload), retry with unbound chat_model.
+                # System prompt catalog + _extract_tool_calls preserves complete tool calling capabilities.
+                if stream_err_occurred or not full_chunks:
+                    full_chunks = []
+                    accumulated_stream = ""
+                    model_to_call = chat_model
+                    current_msgs = fallback_msgs
+
+                    try:
+                        async for chunk in chat_model.astream(current_msgs):
                             full_chunks.append(chunk)
                             txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                            if txt:
+                                accumulated_stream += txt
+                                if cb:
+                                    if not any(tag in accumulated_stream.lower() for tag in (
+                                        "<tool_call>", "<dots_function_call>", "<function_call>",
+                                        "<invoke", "<|tool_call_start|>"
+                                    )):
+                                        cb(agent_name.lower(), txt)
+                    except Exception as stream_err2:
+                        last_stream_err = stream_err2
+
+                # Attempt 3: If streaming still yielded 0 chunks or raised an error (e.g. proxy does not
+                # support SSE streaming at all), fall back to direct non-streaming ainvoke().
+                if not full_chunks:
+                    try:
+                        direct_chunk = await chat_model.ainvoke(current_msgs)
+                        if direct_chunk and (getattr(direct_chunk, "content", None) or getattr(direct_chunk, "tool_calls", None)):
+                            full_chunks = [direct_chunk]
+                            txt = _extract_chunk_text(getattr(direct_chunk, "content", ""))
                             if txt and cb:
-                                cb(agent_name.lower(), txt)
-                        current_msgs = fallback_msgs
-                    else:
-                        raise stream_err
+                                if not any(tag in txt.lower() for tag in (
+                                    "<tool_call>", "<dots_function_call>", "<function_call>",
+                                    "<invoke", "<|tool_call_start|>"
+                                )):
+                                    cb(agent_name.lower(), txt)
+                    except Exception as inv_err:
+                        try:
+                            simplified_msgs = [m for m in current_msgs if isinstance(m, (SystemMessage, HumanMessage))]
+                            if not simplified_msgs:
+                                simplified_msgs = current_msgs
+                            direct_chunk = await chat_model.ainvoke(simplified_msgs)
+                            if direct_chunk and (getattr(direct_chunk, "content", None) or getattr(direct_chunk, "tool_calls", None)):
+                                full_chunks = [direct_chunk]
+                                txt = _extract_chunk_text(getattr(direct_chunk, "content", ""))
+                                if txt and cb:
+                                    if not any(tag in txt.lower() for tag in (
+                                        "<tool_call>", "<dots_function_call>", "<function_call>",
+                                        "<invoke", "<|tool_call_start|>"
+                                    )):
+                                        cb(agent_name.lower(), txt)
+                        except Exception:
+                            if last_stream_err:
+                                raise last_stream_err
+                            raise inv_err
+
+                if not full_chunks and last_stream_err:
+                    raise last_stream_err
 
                 if full_chunks:
                     iter_resp = full_chunks[0]
@@ -1317,11 +1374,25 @@ class MultiAgentSecOpsOrchestrator:
                     )
                 )
                 synth_chunks = []
-                async for chunk in chat_model.astream(synth_msgs):
-                    synth_chunks.append(chunk)
-                    txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                    if txt and cb:
-                        cb(agent_name.lower(), txt)
+                try:
+                    async for chunk in chat_model.astream(synth_msgs):
+                        synth_chunks.append(chunk)
+                        txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                        if txt and cb:
+                            cb(agent_name.lower(), txt)
+                except Exception:
+                    synth_chunks = []
+
+                if not synth_chunks:
+                    try:
+                        synth_inv = await chat_model.ainvoke(synth_msgs)
+                        if synth_inv:
+                            synth_chunks = [synth_inv]
+                            txt = _extract_chunk_text(getattr(synth_inv, "content", ""))
+                            if txt and cb:
+                                cb(agent_name.lower(), txt)
+                    except Exception:
+                        pass
                 if synth_chunks:
                     synth_resp = synth_chunks[0]
                     for c in synth_chunks[1:]:
@@ -1424,12 +1495,26 @@ class MultiAgentSecOpsOrchestrator:
         except Exception as e:
             err = str(e)
             fallback_success = False
+
+            # Direct fallback on the active model itself via non-streaming ainvoke:
+            if not is_mock:
+                try:
+                    direct_resp = await chat_model.ainvoke(prompt_msgs)
+                    ext_c = _extract_chunk_text(getattr(direct_resp, "content", ""))
+                    if ext_c and ext_c.strip():
+                        if cb:
+                            cb(agent_name.lower(), ext_c)
+                        response = AIMessage(content=ext_c)
+                        fallback_success = True
+                except Exception:
+                    fallback_success = False
+
             is_openrouter = (
                 active_cfg.provider == ProviderType.OPENROUTER
                 or getattr(active_cfg.provider, "value", str(active_cfg.provider)).lower() == "openrouter"
                 or "openrouter" in str(active_cfg.api_base or "").lower()
             )
-            if active_cfg.model != "openrouter/free" and is_openrouter:
+            if not fallback_success and active_cfg.model != "openrouter/free" and is_openrouter:
                 try:
                     import os
                     from ..llm_providers.factory import create_chat_model
@@ -1452,11 +1537,24 @@ class MultiAgentSecOpsOrchestrator:
                     )
                     fb_model = create_chat_model(fb_cfg)
                     fb_chunks = []
-                    async for chunk in fb_model.astream(prompt_msgs):
-                        fb_chunks.append(chunk)
-                        txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                        if txt and cb:
-                            cb(agent_name.lower(), txt)
+                    try:
+                        async for chunk in fb_model.astream(prompt_msgs):
+                            fb_chunks.append(chunk)
+                            txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                            if txt and cb:
+                                cb(agent_name.lower(), txt)
+                    except Exception:
+                        fb_chunks = []
+                    if not fb_chunks:
+                        try:
+                            fb_inv = await fb_model.ainvoke(prompt_msgs)
+                            if fb_inv:
+                                fb_chunks = [fb_inv]
+                                txt = _extract_chunk_text(getattr(fb_inv, "content", ""))
+                                if txt and cb:
+                                    cb(agent_name.lower(), txt)
+                        except Exception:
+                            pass
                     if fb_chunks:
                         fb_response = fb_chunks[0]
                         for c in fb_chunks[1:]:
@@ -1475,11 +1573,24 @@ class MultiAgentSecOpsOrchestrator:
                             from ..llm_providers.factory import create_chat_model
                             cand_model = create_chat_model(cand_cfg)
                             cand_chunks = []
-                            async for chunk in cand_model.astream(prompt_msgs):
-                                cand_chunks.append(chunk)
-                                txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                                if txt and cb:
-                                    cb(agent_name.lower(), txt)
+                            try:
+                                async for chunk in cand_model.astream(prompt_msgs):
+                                    cand_chunks.append(chunk)
+                                    txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                                    if txt and cb:
+                                        cb(agent_name.lower(), txt)
+                            except Exception:
+                                cand_chunks = []
+                            if not cand_chunks:
+                                try:
+                                    cand_inv = await cand_model.ainvoke(prompt_msgs)
+                                    if cand_inv:
+                                        cand_chunks = [cand_inv]
+                                        txt = _extract_chunk_text(getattr(cand_inv, "content", ""))
+                                        if txt and cb:
+                                            cb(agent_name.lower(), txt)
+                                except Exception:
+                                    pass
                             if cand_chunks:
                                 fb_resp = cand_chunks[0]
                                 for c in cand_chunks[1:]:

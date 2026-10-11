@@ -1122,4 +1122,113 @@ async def test_multistep_react_agent_loop_continuation():
     assert "Playwright has been successfully verified and installed" in str(last_msg.content)
 
 
+@pytest.mark.asyncio
+async def test_no_generation_chunks_fallback_to_unbound_and_ainvoke():
+    """Verify that models/proxies raising 'No generation chunks were returned'
+    or returning empty streams automatically recover via unbound streaming and non-streaming ainvoke."""
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.tools import StructuredTool
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator
+    from scopeforge_engine.agents.state import AgentState
+
+    # Scenario 1: Model whose bound tool stream raises "No generation chunks were returned",
+    # but unbound stream works.
+    orch = MultiAgentSecOpsOrchestrator()
+    orch.set_mode("live")
+
+    class BoundFailingModel:
+        def __init__(self):
+            self.bound_called = False
+            self.unbound_stream_called = False
+
+        def bind_tools(self, tools):
+            bound = BoundFailingModel()
+            bound.bound_called = True
+            return bound
+
+        async def astream(self, messages):
+            if self.bound_called:
+                # Simulates third-party proxy failing when OpenAI tools payload is present
+                raise ValueError("No generation chunks were returned")
+            self.unbound_stream_called = True
+            yield AIMessage(content="Hello from unbound stream! How can I help you today?")
+
+        async def ainvoke(self, messages):
+            return AIMessage(content="Hello from direct ainvoke!")
+
+    model_bound_fail = BoundFailingModel()
+    orch.provider_mgr.get_chat_model = lambda: model_bound_fail
+    orch.provider_mgr.get_active_config = lambda: type("C", (), {
+        "provider": "custom",
+        "model": "claude-opus-4-8",
+        "name": "claude-justwork",
+    })()
+
+    dummy_tool = StructuredTool.from_function(func=lambda x="": "ok", name="dummy", description="dummy tool")
+
+    state = AgentState(
+        messages=[HumanMessage(content="hi")],
+        active_agent="supervisor",
+        next_step="supervisor",
+        scope=["*"],
+        findings=[],
+        a2a_log=[],
+        max_iterations=5,
+    )
+
+    res1 = await orch._execute_react_agent_loop(
+        agent_name="supervisor",
+        system_prompt="You are supervisor.",
+        tools=[dummy_tool],
+        state=state,
+        max_iterations=5,
+    )
+    last_msg1 = res1["messages"][-1]
+    assert "Hello from unbound stream!" in str(last_msg1.content)
+
+    # Scenario 2: Model whose astream() completely returns 0 chunks (or raises No generation chunks)
+    # both bound and unbound (e.g. proxy does not support SSE streaming), but ainvoke() works.
+    class NonStreamingProxyModel:
+        def __init__(self):
+            self.ainvoke_called = False
+
+        def bind_tools(self, tools):
+            return self
+
+        async def astream(self, messages):
+            # Simulates proxy returning empty SSE or closing connection
+            raise ValueError("No generation chunks were returned")
+            if False:
+                yield AIMessage(content="")
+
+        async def ainvoke(self, messages):
+            self.ainvoke_called = True
+            return AIMessage(content="Hello from non-streaming ainvoke fallback! Proxy delivered full response.")
+
+    model_non_stream = NonStreamingProxyModel()
+    orch.provider_mgr.get_chat_model = lambda: model_non_stream
+
+    state2 = AgentState(
+        messages=[HumanMessage(content="hi")],
+        active_agent="supervisor",
+        next_step="supervisor",
+        scope=["*"],
+        findings=[],
+        a2a_log=[],
+        max_iterations=5,
+    )
+
+    res2 = await orch._execute_react_agent_loop(
+        agent_name="supervisor",
+        system_prompt="You are supervisor.",
+        tools=[dummy_tool],
+        state=state2,
+        max_iterations=5,
+    )
+    assert model_non_stream.ainvoke_called is True
+    last_msg2 = res2["messages"][-1]
+    assert "Hello from non-streaming ainvoke fallback!" in str(last_msg2.content)
+
+
+
 
