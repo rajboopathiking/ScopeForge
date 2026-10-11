@@ -1020,7 +1020,106 @@ def test_tool_selection_and_multi_format_extraction():
     assert norm_name3 == "grep_search"
     assert norm_args3["query"] == "class Orchestrator"
 
-    # 11. Clean tool call text strips XML and ReAct tags
+    # 11. Bare tool name inside <tool_call> (no JSON or XML tags)
+    msg9 = AIMessage(content="Let me check the MCP config:<tool_call>list_mcp_servers</tool_call>")
+    tool_map_with_mcp = {**tool_map, "list_mcp_servers": 1, "add_mcp_server": 1}
+    res9 = _extract_tool_calls(msg9, tool_map_with_mcp)
+    assert len(res9) == 1
+    assert res9[0]["name"] == "list_mcp_servers"
+    assert res9[0]["args"] == {}
+
+    # 12. Bare tool name with parens inside <tool_call>
+    msg10 = AIMessage(content="Checking status:<tool_call>list_mcp_servers()</tool_call>")
+    res10 = _extract_tool_calls(msg10, tool_map_with_mcp)
+    assert len(res10) == 1
+    assert res10[0]["name"] == "list_mcp_servers"
+
+    # 13. <dots_function_call> with invoke and parameter attributes
+    dots_content = '<dots_function_call>\n\nbash_cli">\ncommand="which npx && which node && node --version"\n</parameter>\n</invoke>\n</dots_function_call>'
+    msg11 = AIMessage(content=dots_content)
+    res11 = _extract_tool_calls(msg11, tool_map)
+    assert len(res11) == 1
+    assert res11[0]["name"] == "bash_cli"
+    assert res11[0]["args"]["command"] == "which npx && which node && node --version"
+
+    # 14. MCP alias and argument normalization
+    norm_mcp, norm_mcp_args = _normalize_tool_call("add_mcp", {"server": "playwright", "cmd": "npx -y @mcp/server"}, tool_map_with_mcp)
+    assert norm_mcp == "add_mcp_server"
+    assert norm_mcp_args["name"] == "playwright"
+    assert norm_mcp_args["command"] == "npx -y @mcp/server"
+
+    # 15. Clean tool call text strips XML, dots, and bare tags cleanly
     raw_text = '<tool_call><name>bash_cli</name></tool_call>\nAnalysis complete.'
     assert _clean_tool_call_text(raw_text) == 'Analysis complete.'
+
+    clean_dots = _clean_tool_call_text(dots_content)
+    assert clean_dots == ""
+
+    clean_bare = _clean_tool_call_text("Let me check:<tool_call>list_mcp_servers</tool_call>")
+    assert clean_bare == "Let me check:"
+
+
+@pytest.mark.asyncio
+async def test_multistep_react_agent_loop_continuation():
+    """Verify that _execute_react_agent_loop continues across multiple tool rounds and synthesizes cleanly."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langchain_core.tools import StructuredTool
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator
+    from scopeforge_engine.agents.state import AgentState
+
+    orch = MultiAgentSecOpsOrchestrator()
+    orch.set_mode("live")
+    calls_made = []
+
+    def _dummy_check(name: str = "all") -> str:
+        calls_made.append("check")
+        return '{"status": "checked", "installed": false}'
+
+    def _dummy_install(pkg: str = "playwright") -> str:
+        calls_made.append(f"install:{pkg}")
+        return f'{{"status": "installed", "pkg": "{pkg}"}}'
+
+    tool1 = StructuredTool.from_function(func=_dummy_check, name="dummy_check", description="Check installed packages")
+    tool2 = StructuredTool.from_function(func=_dummy_install, name="dummy_install", description="Install a package")
+
+    class MockMultiStepModel:
+        def bind_tools(self, tools):
+            return self
+
+        async def astream(self, messages):
+            tool_msg_count = sum(1 for m in messages if isinstance(m, ToolMessage))
+            if tool_msg_count == 0:
+                yield AIMessage(content='<tool_call>dummy_check(name="playwright")</tool_call>')
+            elif tool_msg_count == 1:
+                yield AIMessage(content='dummy_check showed not installed. Now installing:<tool_call>dummy_install(pkg="playwright")</tool_call>')
+            else:
+                yield AIMessage(content="Playwright has been successfully verified and installed via multi-step autonomous execution.")
+
+    orch.provider_mgr.get_chat_model = lambda: MockMultiStepModel()
+    orch.provider_mgr.get_active_config = lambda: type("C", (), {"provider": "mock", "model": "mock-multistep", "name": "mock"})()
+
+    state = AgentState(
+        messages=[HumanMessage(content="add playwright package")],
+        active_agent="supervisor",
+        next_step="supervisor",
+        scope=["*"],
+        findings=[],
+        a2a_log=[],
+        max_iterations=10,
+    )
+
+    result = await orch._execute_react_agent_loop(
+        agent_name="supervisor",
+        system_prompt="You are supervisor.",
+        tools=[tool1, tool2],
+        state=state,
+        max_iterations=10,
+    )
+
+    assert "check" in calls_made
+    assert "install:playwright" in calls_made
+    last_msg = result["messages"][-1]
+    assert "Playwright has been successfully verified and installed" in str(last_msg.content)
+
+
 

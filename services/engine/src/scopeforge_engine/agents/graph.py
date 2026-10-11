@@ -80,6 +80,11 @@ def _format_tools_prompt_catalog(tools: List[Any]) -> str:
         "- For SAST static security audit: call `sast_code_audit` (with code_snippet_or_file).",
         "- For CVE lookup: call `cve_advisory_search` (with query).",
         "- For verifying vulnerabilities: call `falsifiable_poc_runner` (with hypothesis and target).",
+        "- For configuring Model Context Protocol (MCP) servers: call `add_mcp_server` (with name and command).",
+        "- For listing configured MCP servers: call `list_mcp_servers()`.",
+        "- For installing skill packages from git: call `install_skill` (with repo_url).",
+        "- For listing installed skills: call `list_skills()`.",
+        "- MULTI-STEP LONG RUNNING TASKS: When accomplishing a multi-step objective, execute each step sequentially using your tools. After receiving each tool result, proceed immediately to the next tool until the entire goal is completed.",
         "- NEVER claim you executed an action or describe results in prose without actually invoking the tool.",
     ])
     return "\n".join(lines)
@@ -127,6 +132,12 @@ def _normalize_tool_call(name: str, args: Dict[str, Any], tool_map: Optional[Dic
         "playwright_automation": "capture_screenshot",
         "subagent": "invoke_subagent", "delegate": "invoke_subagent",
         "a2a": "send_a2a_message",
+        "list_mcp": "list_mcp_servers", "mcp_list": "list_mcp_servers", "mcp_servers": "list_mcp_servers",
+        "get_mcp_servers": "list_mcp_servers", "show_mcp_servers": "list_mcp_servers", "get_mcp": "list_mcp_servers",
+        "add_mcp": "add_mcp_server", "mcp_add": "add_mcp_server", "install_mcp": "add_mcp_server",
+        "mcp_install": "add_mcp_server", "add_mcp_tool": "add_mcp_server", "setup_mcp": "add_mcp_server",
+        "skills": "list_skills", "get_skills": "list_skills", "show_skills": "list_skills",
+        "add_skill": "install_skill", "skill_install": "install_skill", "install_skills": "install_skill",
     }
     clean_name = aliases.get(name.lower().strip(), name.strip())
 
@@ -229,12 +240,27 @@ def _normalize_tool_call(name: str, args: Dict[str, Any], tool_map: Optional[Dic
             norm_args["task"] = norm_args.pop(k)
             break
 
+    for k in ("server", "server_name", "title"):
+        if k in norm_args and "name" not in norm_args and clean_name == "add_mcp_server":
+            norm_args["name"] = norm_args.pop(k)
+            break
+
+    for k in ("cmd", "exec", "cli", "run"):
+        if k in norm_args and "command" not in norm_args and clean_name == "add_mcp_server":
+            norm_args["command"] = norm_args.pop(k)
+            break
+
+    for k in ("url", "repo", "git_url", "git_repo"):
+        if k in norm_args and "repo_url" not in norm_args and clean_name == "install_skill":
+            norm_args["repo_url"] = norm_args.pop(k)
+            break
+
     return clean_name, norm_args
 
 
 
 def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """Extract tool calls from native AIMessage.tool_calls or raw text syntax (ChatML, XML, JSON, ReAct, Python syntax)."""
+    """Extract tool calls from native AIMessage.tool_calls or raw text syntax (ChatML, XML, dots_function_call, JSON, ReAct, Python syntax)."""
     extracted: List[Dict[str, Any]] = []
 
     # 1. Native LangChain tool calls
@@ -302,40 +328,112 @@ def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> 
     if extracted:
         return extracted
 
-    # 3. XML style: <tool_call>...</tool_call> or <invoke>...</invoke>
-    xml_matches = re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
-    for xm in xml_matches:
-        xm_clean = xm.strip()
-        name_m = re.search(r"<name>(.*?)</name>", xm_clean, re.DOTALL)
-        args_m = re.search(r"<arguments>(.*?)</arguments>", xm_clean, re.DOTALL)
-        if name_m and args_m:
-            try:
-                args_data = json.loads(args_m.group(1).strip())
-            except Exception:
-                args_data = {"input": args_m.group(1).strip()}
-            norm_name, norm_args = _normalize_tool_call(name_m.group(1).strip(), args_data, tool_map)
+    # 3. XML style tags: <dots_function_call>, <tool_call>, <function_call>, <invoke>
+    # 3a. <dots_function_call> blocks
+    dots_matches = re.findall(r"<dots_function_call>(.*?)</dots_function_call>", content, re.DOTALL)
+    for dm in dots_matches:
+        dm_clean = dm.strip()
+        inv_m = re.search(r'(?:<invoke\s+(?:name|tool|function)=[\"\']?|)(\w+)[\"\']?>(.*?)(?:</invoke>|$)', dm_clean, re.DOTALL)
+        if inv_m and (inv_m.group(1) in (tool_map or {}) or any(t.lower() == inv_m.group(1).lower() for t in (tool_map or {}))):
+            fn_name = inv_m.group(1).strip()
+            body = inv_m.group(2).strip()
+            args = {}
+            for p_name, val in re.findall(r'<parameter\s+name=[\"\'](\w+)[\"\']>(.*?)</parameter>', body, re.DOTALL):
+                args[p_name] = val.strip()
+            if not args:
+                for k, v in re.findall(r'(\w+)\s*=\s*[\"\']([^\"\']*)[\"\']', body):
+                    args[k] = v
+            norm_name, norm_args = _normalize_tool_call(fn_name, args, tool_map)
             extracted.append({
                 "name": norm_name,
                 "args": norm_args,
                 "id": f"call_{uuid.uuid4().hex[:8]}"
             })
-        else:
-            try:
-                data = json.loads(xm_clean)
-                name = data.get("name") or data.get("tool")
-                args = data.get("arguments") or data.get("args") or data.get("parameters") or {}
-                norm_name, norm_args = _normalize_tool_call(name, args, tool_map)
-                extracted.append({
-                    "name": norm_name,
-                    "args": norm_args,
-                    "id": f"call_{uuid.uuid4().hex[:8]}"
-                })
-            except Exception:
-                pass
+            continue
 
-    inv_matches = re.findall(r"<invoke\s+name=[\"\'](\w+)[\"\']>(.*?)</invoke>", content, re.DOTALL)
+        fn_call = re.search(r'(\w+)\s*(?:\((.*?)\)|$)', dm_clean, re.DOTALL)
+        if fn_call and (fn_call.group(1) in (tool_map or {}) or any(t.lower() == fn_call.group(1).lower() for t in (tool_map or {}))):
+            fn_name = fn_call.group(1).strip()
+            args = {}
+            if fn_call.group(2):
+                for k, v in re.findall(r'(\w+)\s*=\s*[\"\']([^\"\']*)[\"\']', fn_call.group(2)):
+                    args[k] = v
+            norm_name, norm_args = _normalize_tool_call(fn_name, args, tool_map)
+            extracted.append({
+                "name": norm_name,
+                "args": norm_args,
+                "id": f"call_{uuid.uuid4().hex[:8]}"
+            })
+
+    # 3b. <tool_call>...</tool_call> or <function_call>...</function_call>
+    tag_matches = re.findall(r"<(?:tool_call|function_call)>(.*?)</(?:tool_call|function_call)>", content, re.DOTALL)
+    for tm in tag_matches:
+        tm_clean = tm.strip()
+        bare_name = re.sub(r"\(.*?\)$", "", tm_clean).strip()
+        norm_bare, _ = _normalize_tool_call(bare_name, {}, tool_map)
+        if (tool_map and norm_bare in tool_map) or bare_name in (tool_map or {}):
+            arg_m = re.search(r"^\w+\s*\((.*?)\)$", tm_clean, re.DOTALL)
+            args = {}
+            if arg_m and arg_m.group(1).strip():
+                try:
+                    tree = ast.parse(f"{bare_name}({arg_m.group(1)})")
+                    for kw in tree.body[0].value.keywords:
+                        try:
+                            args[kw.arg] = ast.literal_eval(kw.value)
+                        except Exception:
+                            args[kw.arg] = str(kw.value)
+                except Exception:
+                    for k, v1, v2, v3 in re.findall(r'(\w+)\s*=\s*(?:\"([^\"]*)\"|\'([^\']*)\'|([^\s,\)]+))', arg_m.group(1)):
+                        args[k] = v1 or v2 or v3
+            norm_name, norm_args = _normalize_tool_call(bare_name, args, tool_map)
+            extracted.append({
+                "name": norm_name,
+                "args": norm_args,
+                "id": f"call_{uuid.uuid4().hex[:8]}"
+            })
+            continue
+
+        name_m = re.search(r"<name>(.*?)</name>", tm_clean, re.DOTALL)
+        if name_m:
+            fn_name = name_m.group(1).strip()
+            args_m = re.search(r"<arguments>(.*?)</arguments>", tm_clean, re.DOTALL)
+            args = {}
+            if args_m:
+                try:
+                    args = json.loads(args_m.group(1).strip())
+                except Exception:
+                    args = {"input": args_m.group(1).strip()}
+            norm_name, norm_args = _normalize_tool_call(fn_name, args, tool_map)
+            extracted.append({
+                "name": norm_name,
+                "args": norm_args,
+                "id": f"call_{uuid.uuid4().hex[:8]}"
+            })
+            continue
+
+        try:
+            data = json.loads(tm_clean)
+            if isinstance(data, dict):
+                t_name = data.get("name") or data.get("tool") or data.get("action")
+                t_args = data.get("arguments") or data.get("args") or data.get("parameters") or {}
+                if t_name:
+                    norm_name, norm_args = _normalize_tool_call(t_name, t_args if isinstance(t_args, dict) else {"input": str(t_args)}, tool_map)
+                    extracted.append({
+                        "name": norm_name,
+                        "args": norm_args,
+                        "id": f"call_{uuid.uuid4().hex[:8]}"
+                    })
+                    continue
+        except Exception:
+            pass
+
+    # 3c. Standalone <invoke name="..."> tags
+    inv_matches = re.findall(r"<invoke\s+(?:name|tool|function)=[\"\'](\w+)[\"\']>(.*?)</invoke>", content, re.DOTALL)
     for fn, body in inv_matches:
         params = dict(re.findall(r"<parameter\s+name=[\"\'](\w+)[\"\']>(.*?)</parameter>", body, re.DOTALL))
+        if not params:
+            for k, v in re.findall(r'(\w+)\s*=\s*[\"\']([^\"\']*)[\"\']', body):
+                params[k] = v
         norm_name, norm_args = _normalize_tool_call(fn, params, tool_map)
         extracted.append({
             "name": norm_name,
@@ -469,8 +567,9 @@ def _clean_tool_call_text(content: str) -> str:
     """Strip raw tool-calling markup tags so conversation text remains clean and human-readable."""
     cleaned = content
     cleaned = re.sub(r"<\|tool_call_start\|>.*?<\|tool_call_end\|>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<tool_call>.*?</tool_call>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"<invoke\s+name=[\"\']\w+[\"\']>.*?</invoke>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<dots_function_call>.*?</dots_function_call>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<(?:tool_call|function_call)>.*?</(?:tool_call|function_call)>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<invoke\s+(?:name|tool|function)=[\"\']\w+[\"\']>.*?</invoke>", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"(?:Action|Tool):\s*\w+\s*\n(?:Action\s+Input|Tool\s+Input|Input|Args|Parameters|Arguments):\s*(?:[^\n]+|\{.*?\})", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r"```(?:json)?\s*\{\s*\"(?:tool|name|action)\".*?\}\s*```", "", cleaned, flags=re.DOTALL)
     return cleaned.strip()
@@ -1046,13 +1145,41 @@ class MultiAgentSecOpsOrchestrator:
             while iteration < max_iterations:
                 current_msgs = _compact_context(current_msgs, max_messages=18)
                 full_chunks = []
+                accumulated_stream = ""
 
-                async for chunk in model_to_call.astream(current_msgs):
-                    full_chunks.append(chunk)
-                    txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                    if txt and cb:
-                        if "<|tool_call_start|>" not in txt and "<tool_call>" not in txt:
-                            cb(agent_name.lower(), txt)
+                try:
+                    async for chunk in model_to_call.astream(current_msgs):
+                        full_chunks.append(chunk)
+                        txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                        if txt:
+                            accumulated_stream += txt
+                            if cb:
+                                if not any(tag in accumulated_stream.lower() for tag in (
+                                    "<tool_call>", "<dots_function_call>", "<function_call>",
+                                    "<invoke", "<|tool_call_start|>"
+                                )):
+                                    cb(agent_name.lower(), txt)
+                except Exception as stream_err:
+                    err_str = str(stream_err).lower()
+                    if iteration > 0 and any(k in err_str for k in ("tool", "role", "tool_call_id", "400", "bad request", "schema")):
+                        fallback_msgs = []
+                        for m in current_msgs:
+                            if isinstance(m, ToolMessage):
+                                fallback_msgs.append(HumanMessage(content=f"[Tool Observation for '{getattr(m, 'name', 'tool')}']:\n{m.content}"))
+                            elif isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+                                clean_c = m.content or f"Action: {m.tool_calls[0].get('name') if m.tool_calls else 'tool'}"
+                                fallback_msgs.append(AIMessage(content=clean_c))
+                            else:
+                                fallback_msgs.append(m)
+                        full_chunks = []
+                        async for chunk in chat_model.astream(fallback_msgs):
+                            full_chunks.append(chunk)
+                            txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                            if txt and cb:
+                                cb(agent_name.lower(), txt)
+                        current_msgs = fallback_msgs
+                    else:
+                        raise stream_err
 
                 if full_chunks:
                     iter_resp = full_chunks[0]
@@ -1069,14 +1196,13 @@ class MultiAgentSecOpsOrchestrator:
                 if not tool_calls:
                     content_str = str(extracted_content or "").strip()
                     # Detect planning/reasoning responses that have no tool calls yet:
-                    # If this is iteration 0 and content looks like a plan (contains future-tense
-                    # markers like "I'll", "I will", "Step 1:"), push the model to act.
+                    # If this is early iterations and content looks like a plan, push the model to act.
                     _is_planning_only = (
-                        iteration == 0
+                        iteration < 3
                         and bool(tool_map)  # tools are available
                         and any(marker in content_str for marker in (
-                            "I'll ", "I will ", "Step 1", "First,", "first,",
-                            "Let me ", "I'll start", "I'll begin", "sequentially",
+                            "I'll ", "I will ", "Step 1", "Step 2", "First,", "first,",
+                            "Next,", "next,", "Let me ", "I'll start", "I'll begin", "sequentially",
                             "I need to ", "Let's start", "I'm going to ",
                         ))
                         and len(content_str) < 800  # short planning text, not a real final answer
@@ -1149,7 +1275,7 @@ class MultiAgentSecOpsOrchestrator:
 
                 iteration += 1
                 cleaned_text = _clean_tool_call_text(extracted_content)
-                iter_resp.content = cleaned_text
+                iter_resp.content = cleaned_text if cleaned_text.strip() else f"Invoking tool: {tool_calls[0].get('name', 'tool')}"
                 iter_resp.tool_calls = tool_calls
                 current_msgs.append(iter_resp)
 
