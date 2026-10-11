@@ -34,70 +34,113 @@ def _extract_chunk_text(chunk_content: Any) -> str:
     return str(chunk_content)
 
 
+def _format_tools_prompt_catalog(tools: List[Any]) -> str:
+    """Format available tools with parameter schemas and clear tool-calling guidelines."""
+    if not tools:
+        return ""
+    lines = [
+        "## AVAILABLE TOOLS AND CALLING CONVENTIONS",
+        "You have access to the following local tools in this workspace. "
+        "When the user's objective requires reading files, editing code, running shell commands, "
+        "probing networks, or searching the web, YOU MUST EXECUTE ONE OR MORE OF THESE TOOLS:",
+        "",
+    ]
+    for t in tools:
+        name = getattr(t, "name", str(t))
+        desc = (getattr(t, "description", "") or "").strip().split("\n")[0]
+        args_schema = getattr(t, "args_schema", None)
+        params = []
+        if args_schema and hasattr(args_schema, "model_fields"):
+            for fn, f in args_schema.model_fields.items():
+                req = "required" if f.is_required() else "optional"
+                params.append(f"{fn}: {req}")
+        p_str = ", ".join(params)
+        lines.append(f"- `{name}({p_str})`: {desc}")
+
+    lines.extend([
+        "",
+        "### TOOL CALLING FORMAT",
+        "You may invoke tools using native function calling, OR directly in text using standard Python function call syntax:",
+        "`tool_name(param1=\"value1\", param2=\"value2\")`",
+        "Or ReAct syntax:",
+        "Action: tool_name",
+        "Action Input: {\"param1\": \"value1\"}",
+        "",
+        "### TOOL SELECTION GUIDELINES",
+        "- For inspecting existing files: call `view_file` (with file_path).",
+        "- For finding files by name or directory structure: call `glob_files` (with pattern).",
+        "- For searching code/regex across the project: call `grep_search` (with query).",
+        "- For modifying existing files: call `edit_file` (with target_content and replacement_content).",
+        "- For creating new files or writing full content: call `write_file` (with file_path and content).",
+        "- For running terminal commands, pytest, git, or checking environment: call `bash_cli` (with command).",
+        "- For searching Google / online docs: call `google_web_search` (with query).",
+        "- For website screenshots: call `capture_screenshot` (with url and output_file).",
+        "- For network port scans: call `recon_port_scan` (with target and ports).",
+        "- For web surface security assessment: call `web_surface_probe` (with url).",
+        "- For SAST static security audit: call `sast_code_audit` (with code_snippet_or_file).",
+        "- For CVE lookup: call `cve_advisory_search` (with query).",
+        "- For verifying vulnerabilities: call `falsifiable_poc_runner` (with hypothesis and target).",
+        "- NEVER claim you executed an action or describe results in prose without actually invoking the tool.",
+    ])
+    return "\n".join(lines)
+
+
 def _normalize_tool_call(name: str, args: Dict[str, Any], tool_map: Optional[Dict[str, Any]] = None) -> tuple[str, Dict[str, Any]]:
     """Map common LLM hallucinated tool names and argument aliases to registered tools."""
     aliases = {
-        "read_file": "view_file",
-        "read": "view_file",
-        "cat": "view_file",
-        "open_file": "view_file",
-        "file_view": "view_file",
-        "view": "view_file",
-        "write": "write_file",
-        "save_file": "write_file",
-        "create_file": "write_file",
-        "edit": "edit_file",
-        "modify_file": "edit_file",
-        "replace_file_content": "edit_file",
-        "append": "append_file",
-        "bash": "bash_cli",
-        "shell": "bash_cli",
-        "terminal": "bash_cli",
-        "run_command": "bash_cli",
-        "execute_command": "bash_cli",
-        "cmd": "bash_cli",
-        "exec": "bash_cli",
-        "glob": "glob_files",
-        "list_files": "glob_files",
-        "ls": "glob_files",
-        "find_files": "glob_files",
-        "dir": "glob_files",
-        "grep": "grep_search",
-        "search_code": "grep_search",
-        "search_files": "grep_search",
-        "find_in_files": "grep_search",
-        "google_search": "google_web_search",
-        "web_search": "google_web_search",
-        "google": "google_web_search",
-        "search_web": "google_web_search",
-        "git_status": "git_status_tool",
-        "status": "git_status_tool",
-        "git_diff": "git_diff_tool",
-        "diff": "git_diff_tool",
-        "git_commit": "git_commit_tool",
-        "commit": "git_commit_tool",
-        "port_scan": "recon_port_scan",
-        "nmap": "recon_port_scan",
-        "sast": "sast_code_audit",
-        "code_audit": "sast_code_audit",
-        "cve": "cve_advisory_search",
-        "cve_search": "cve_advisory_search",
-        "poc": "falsifiable_poc_runner",
-        "run_poc": "falsifiable_poc_runner",
-        "evidence": "evidence_recorder",
-        "screenshot": "capture_screenshot",
-        "screenshot_tool": "capture_screenshot",
-        "capture_screenshot": "capture_screenshot",
-        "take_screenshot": "capture_screenshot",
+        "read_file": "view_file", "read": "view_file", "cat": "view_file", "open_file": "view_file",
+        "file_view": "view_file", "view": "view_file", "show_file": "view_file", "get_file": "view_file",
+        "inspect_file": "view_file",
+        "write": "write_file", "save_file": "write_file", "create_file": "write_file", "save": "write_file",
+        "create": "write_file", "new_file": "write_file",
+        "edit": "edit_file", "modify_file": "edit_file", "replace_file_content": "edit_file", "patch": "edit_file",
+        "modify": "edit_file", "replace": "edit_file", "change_file": "edit_file", "update_file": "edit_file",
+        "append": "append_file", "add_to_file": "append_file",
+        "bash": "bash_cli", "shell": "bash_cli", "terminal": "bash_cli", "run_command": "bash_cli",
+        "execute_command": "bash_cli", "cmd": "bash_cli", "exec": "bash_cli", "run_bash": "bash_cli",
+        "bash_command": "bash_cli", "run": "bash_cli", "sh": "bash_cli", "run_shell": "bash_cli",
+        "shell_command": "bash_cli", "terminal_exec": "bash_cli",
+        "glob": "glob_files", "list_files": "glob_files", "ls": "glob_files", "find_files": "glob_files",
+        "dir": "glob_files", "list_dir": "glob_files", "listdir": "glob_files", "find": "glob_files",
+        "grep": "grep_search", "search_code": "grep_search", "search_files": "grep_search",
+        "find_in_files": "grep_search", "code_search": "grep_search", "file_search": "grep_search",
+        "search_text": "grep_search",
+        "google_search": "google_web_search", "web_search": "google_web_search", "google": "google_web_search",
+        "search_web": "google_web_search", "websearch": "google_web_search", "browse": "google_web_search",
+        "search_online": "google_web_search", "web": "google_web_search", "fetch_web": "google_web_search",
+        "git_status": "git_status_tool", "status": "git_status_tool",
+        "git_diff": "git_diff_tool", "diff": "git_diff_tool",
+        "git_commit": "git_commit_tool", "commit": "git_commit_tool",
+        "port_scan": "recon_port_scan", "nmap": "recon_port_scan", "scan_ports": "recon_port_scan",
+        "portscan": "recon_port_scan", "ports": "recon_port_scan", "scan_target": "recon_port_scan",
+        "nmap_scan": "recon_port_scan",
+        "sast": "sast_code_audit", "code_audit": "sast_code_audit", "sast_scan": "sast_code_audit",
+        "security_audit": "sast_code_audit", "static_analysis": "sast_code_audit", "audit_code": "sast_code_audit",
+        "cve": "cve_advisory_search", "cve_search": "cve_advisory_search", "cve_lookup": "cve_advisory_search",
+        "search_cve": "cve_advisory_search", "advisory_search": "cve_advisory_search",
+        "poc": "falsifiable_poc_runner", "run_poc": "falsifiable_poc_runner", "exploit": "falsifiable_poc_runner",
+        "verify_poc": "falsifiable_poc_runner", "verify_exploit": "falsifiable_poc_runner",
+        "evidence": "evidence_recorder", "save_evidence": "evidence_recorder", "record_evidence": "evidence_recorder",
+        "screenshot": "capture_screenshot", "screenshot_tool": "capture_screenshot",
+        "take_screenshot": "capture_screenshot", "browser_screenshot": "capture_screenshot",
+        "web_screenshot": "capture_screenshot", "playwright": "capture_screenshot", "browser": "capture_screenshot",
         "playwright_automation": "capture_screenshot",
-        "playwright": "capture_screenshot",
-        "browser_screenshot": "capture_screenshot",
-        "web_screenshot": "capture_screenshot",
-        "subagent": "invoke_subagent",
-        "delegate": "invoke_subagent",
+        "subagent": "invoke_subagent", "delegate": "invoke_subagent",
         "a2a": "send_a2a_message",
     }
     clean_name = aliases.get(name.lower().strip(), name.strip())
+
+    # Smart disambiguation for "search"
+    if clean_name == "search":
+        q_val = str(args.get("query") or args.get("q") or args.get("pattern") or "").lower()
+        if any(k in args for k in ("directory", "dir", "path", "file_pattern")) or "code" in q_val:
+            clean_name = "grep_search"
+        elif "http" in q_val or "www." in q_val or (tool_map and "grep_search" not in tool_map):
+            clean_name = "google_web_search"
+        elif tool_map and "grep_search" in tool_map:
+            clean_name = "grep_search"
+        else:
+            clean_name = "google_web_search"
 
     if tool_map:
         if clean_name not in tool_map:
@@ -107,39 +150,91 @@ def _normalize_tool_call(name: str, args: Dict[str, Any], tool_map: Optional[Dic
                     break
 
     norm_args = dict(args)
-    if "path" in norm_args and "file_path" not in norm_args:
-        norm_args["file_path"] = norm_args.pop("path")
-    if "filename" in norm_args and "file_path" not in norm_args:
-        norm_args["file_path"] = norm_args.pop("filename")
-    if "file" in norm_args and "file_path" not in norm_args:
-        norm_args["file_path"] = norm_args.pop("file")
-    if "filepath" in norm_args and "file_path" not in norm_args:
-        norm_args["file_path"] = norm_args.pop("filepath")
-    if "cmd" in norm_args and "command" not in norm_args:
-        norm_args["command"] = norm_args.pop("cmd")
-    if "--command" in norm_args and "command" not in norm_args:
-        norm_args["command"] = norm_args.pop("--command")
-    # Screenshot arg aliases (models emit url/output_file variants)
-    if "link" in norm_args and "url" not in norm_args:
-        norm_args["url"] = norm_args.pop("link")
-    if "website" in norm_args and "url" not in norm_args:
-        norm_args["url"] = norm_args.pop("website")
-    for _k in ("output", "file", "destination", "output_path", "path"):
-        if _k in norm_args and "output_file" not in norm_args:
-            norm_args["output_file"] = norm_args.pop(_k)
+    if len(norm_args) == 1 and isinstance(list(norm_args.values())[0], dict) and list(norm_args.keys())[0] in ("input", "args", "parameters", "arguments"):
+        norm_args = dict(list(norm_args.values())[0])
+
+    for k in ("path", "filename", "file", "filepath", "target_file", "file_name", "target"):
+        if k in norm_args and "file_path" not in norm_args and clean_name in ("view_file", "edit_file", "write_file", "append_file"):
+            norm_args["file_path"] = norm_args.pop(k)
             break
-    if "script" in norm_args and "command" not in norm_args:
-        norm_args["command"] = norm_args.pop("script")
-    if "q" in norm_args and "query" not in norm_args:
-        norm_args["query"] = norm_args.pop("q")
-    if "pattern" not in norm_args and "glob" in norm_args:
-        norm_args["pattern"] = norm_args.pop("glob")
+
+    for k in ("old_str", "old_string", "find", "target", "old", "old_content", "search", "pattern"):
+        if k in norm_args and "target_content" not in norm_args and clean_name == "edit_file":
+            norm_args["target_content"] = norm_args.pop(k)
+            break
+
+    for k in ("new_str", "new_string", "replace", "replacement", "new", "new_content"):
+        if k in norm_args and "replacement_content" not in norm_args and clean_name == "edit_file":
+            norm_args["replacement_content"] = norm_args.pop(k)
+            break
+
+    for k in ("text", "data", "body", "code"):
+        if k in norm_args and "content" not in norm_args and clean_name in ("write_file", "append_file"):
+            norm_args["content"] = norm_args.pop(k)
+            break
+
+    for k in ("cmd", "script", "input", "code", "exec", "c", "--command"):
+        if k in norm_args and "command" not in norm_args:
+            norm_args["command"] = norm_args.pop(k)
+            break
+
+    for k in ("q", "pattern", "search_query", "search", "term", "text", "regex"):
+        if k in norm_args and "query" not in norm_args and clean_name in ("grep_search", "google_web_search", "cve_advisory_search"):
+            norm_args["query"] = norm_args.pop(k)
+            break
+
+    for k in ("glob", "file_pattern", "query", "search"):
+        if k in norm_args and "pattern" not in norm_args and clean_name == "glob_files":
+            norm_args["pattern"] = norm_args.pop(k)
+            break
+
+    for k in ("dir", "folder", "path"):
+        if k in norm_args and "directory" not in norm_args and clean_name in ("glob_files", "grep_search"):
+            norm_args["directory"] = norm_args.pop(k)
+            break
+
+    for k in ("host", "ip", "domain", "url", "hostname"):
+        if k in norm_args and "target" not in norm_args and clean_name in ("recon_port_scan", "falsifiable_poc_runner"):
+            norm_args["target"] = norm_args.pop(k)
+            break
+
+    if "port" in norm_args and "ports" not in norm_args and clean_name == "recon_port_scan":
+        val = norm_args.pop("port")
+        if isinstance(val, (list, tuple)):
+            val = ",".join(str(p) for p in val)
+        norm_args["ports"] = str(val)
+
+    for k in ("code", "snippet", "file", "file_path", "path", "input"):
+        if k in norm_args and "code_snippet_or_file" not in norm_args and clean_name == "sast_code_audit":
+            norm_args["code_snippet_or_file"] = norm_args.pop(k)
+            break
+
+    for k in ("link", "website", "uri", "target", "address"):
+        if k in norm_args and "url" not in norm_args and clean_name in ("capture_screenshot", "web_surface_probe"):
+            norm_args["url"] = norm_args.pop(k)
+            break
+
+    for k in ("output", "file", "destination", "output_path", "path", "filename"):
+        if k in norm_args and "output_file" not in norm_args and clean_name == "capture_screenshot":
+            norm_args["output_file"] = norm_args.pop(k)
+            break
+
+    for k in ("agent", "subagent", "name"):
+        if k in norm_args and "agent_name" not in norm_args and clean_name == "invoke_subagent":
+            norm_args["agent_name"] = norm_args.pop(k)
+            break
+
+    for k in ("prompt", "instruction", "message", "query"):
+        if k in norm_args and "task" not in norm_args and clean_name == "invoke_subagent":
+            norm_args["task"] = norm_args.pop(k)
+            break
 
     return clean_name, norm_args
 
 
+
 def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """Extract tool calls from native AIMessage.tool_calls or raw text syntax (ChatML, XML, JSON, ReAct)."""
+    """Extract tool calls from native AIMessage.tool_calls or raw text syntax (ChatML, XML, JSON, ReAct, Python syntax)."""
     extracted: List[Dict[str, Any]] = []
 
     # 1. Native LangChain tool calls
@@ -190,35 +285,68 @@ def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> 
                     tree = ast.parse(f"{fn_name}({fn_args_str})")
                     call_node = tree.body[0].value
                     for kw in call_node.keywords:
-                        args_dict[kw.arg] = ast.literal_eval(kw.value)
+                        try:
+                            args_dict[kw.arg] = ast.literal_eval(kw.value)
+                        except Exception:
+                            args_dict[kw.arg] = str(kw.value)
                 except Exception:
-                    pairs = re.findall(r'(\w+)\s*=\s*(?:["\']([^"\']*)["\']|([^\s,\)]+))', fn_args_str)
-                    for k, v1, v2 in pairs:
-                        args_dict[k] = v1 if v1 != "" else v2
+                    pairs = re.findall(r'(\w+)\s*=\s*(?:\"([^\"]*)\"|\'([^\']*)\'|([^\s,\)]+))', fn_args_str)
+                    for k, v1, v2, v3 in pairs:
+                        args_dict[k] = v1 or v2 or v3
             norm_name, norm_args = _normalize_tool_call(fn_name, args_dict, tool_map)
             extracted.append({
                 "name": norm_name,
                 "args": norm_args,
                 "id": f"call_{uuid.uuid4().hex[:8]}"
             })
+    if extracted:
+        return extracted
 
-    # 3. XML style: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+    # 3. XML style: <tool_call>...</tool_call> or <invoke>...</invoke>
     xml_matches = re.findall(r"<tool_call>(.*?)</tool_call>", content, re.DOTALL)
     for xm in xml_matches:
-        try:
-            data = json.loads(xm.strip())
-            name = data.get("name") or data.get("tool")
-            args = data.get("arguments") or data.get("args") or data.get("parameters") or {}
-            norm_name, norm_args = _normalize_tool_call(name, args, tool_map)
+        xm_clean = xm.strip()
+        name_m = re.search(r"<name>(.*?)</name>", xm_clean, re.DOTALL)
+        args_m = re.search(r"<arguments>(.*?)</arguments>", xm_clean, re.DOTALL)
+        if name_m and args_m:
+            try:
+                args_data = json.loads(args_m.group(1).strip())
+            except Exception:
+                args_data = {"input": args_m.group(1).strip()}
+            norm_name, norm_args = _normalize_tool_call(name_m.group(1).strip(), args_data, tool_map)
             extracted.append({
                 "name": norm_name,
                 "args": norm_args,
                 "id": f"call_{uuid.uuid4().hex[:8]}"
             })
-        except Exception:
-            pass
+        else:
+            try:
+                data = json.loads(xm_clean)
+                name = data.get("name") or data.get("tool")
+                args = data.get("arguments") or data.get("args") or data.get("parameters") or {}
+                norm_name, norm_args = _normalize_tool_call(name, args, tool_map)
+                extracted.append({
+                    "name": norm_name,
+                    "args": norm_args,
+                    "id": f"call_{uuid.uuid4().hex[:8]}"
+                })
+            except Exception:
+                pass
 
-    # 4. Markdown JSON code blocks
+    inv_matches = re.findall(r"<invoke\s+name=[\"\'](\w+)[\"\']>(.*?)</invoke>", content, re.DOTALL)
+    for fn, body in inv_matches:
+        params = dict(re.findall(r"<parameter\s+name=[\"\'](\w+)[\"\']>(.*?)</parameter>", body, re.DOTALL))
+        norm_name, norm_args = _normalize_tool_call(fn, params, tool_map)
+        extracted.append({
+            "name": norm_name,
+            "args": norm_args,
+            "id": f"call_{uuid.uuid4().hex[:8]}"
+        })
+
+    if extracted:
+        return extracted
+
+    # 4. Markdown JSON code blocks or raw JSON
     json_blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
     for jb in json_blocks:
         try:
@@ -237,8 +365,54 @@ def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> 
         except Exception:
             pass
 
+    # Standalone JSON objects outside backticks
+    if not extracted:
+        standalone_jsons = re.findall(r'(\{(?:[^{}]|(?:\{[^{}]*\}))*\})', content)
+        for sj in standalone_jsons:
+            try:
+                data = json.loads(sj)
+                if any(k in data for k in ("tool", "name", "action")) and any(k in data for k in ("args", "arguments", "parameters", "action_input", "input")):
+                    t_name = data.get("name") or data.get("tool") or data.get("action")
+                    t_args = data.get("arguments") or data.get("args") or data.get("parameters") or data.get("action_input") or data.get("input") or {}
+                    if isinstance(t_name, str) and t_name.strip():
+                        t_args_dict = t_args if isinstance(t_args, dict) else {"input": str(t_args)}
+                        norm_name, norm_args = _normalize_tool_call(t_name, t_args_dict, tool_map)
+                        extracted.append({
+                            "name": norm_name,
+                            "args": norm_args,
+                            "id": f"call_{uuid.uuid4().hex[:8]}"
+                        })
+            except Exception:
+                pass
+
+    if extracted:
+        return extracted
+
     # 5. ReAct format: Action: <tool>\nAction Input: <input>
-    react_matches = re.findall(r"(?:Action|Tool):\s*(\w+)\s*\n(?:Action\s+Input|Tool\s+Input|Args|Parameters):\s*([^\n]+|\{.*?\})", content, re.IGNORECASE | re.DOTALL)
+    react_inline = re.findall(r"(?:Action|Tool):\s*(\w+)\s*\((.*?)\)", content)
+    for act_name, act_args_str in react_inline:
+        args_dict = {}
+        if act_args_str.strip():
+            try:
+                tree = ast.parse(f"{act_name}({act_args_str})")
+                call_node = tree.body[0].value
+                for kw in call_node.keywords:
+                    try:
+                        args_dict[kw.arg] = ast.literal_eval(kw.value)
+                    except Exception:
+                        args_dict[kw.arg] = str(kw.value)
+            except Exception:
+                pairs = re.findall(r'(\w+)\s*=\s*(?:\"([^\"]*)\"|\'([^\']*)\'|([^\s,\)]+))', act_args_str)
+                for k, v1, v2, v3 in pairs:
+                    args_dict[k] = v1 or v2 or v3
+        norm_name, norm_args = _normalize_tool_call(act_name, args_dict, tool_map)
+        extracted.append({
+            "name": norm_name,
+            "args": norm_args,
+            "id": f"call_{uuid.uuid4().hex[:8]}"
+        })
+
+    react_matches = re.findall(r"(?:Action|Tool):\s*(\w+)\s*\n(?:Action\s+Input|Tool\s+Input|Input|Args|Parameters|Arguments):\s*([^\n]+|\{.*?\})", content, re.IGNORECASE | re.DOTALL)
     for act_name, act_inp in react_matches:
         act_name = act_name.strip()
         act_inp = act_inp.strip()
@@ -257,6 +431,37 @@ def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> 
             "id": f"call_{uuid.uuid4().hex[:8]}"
         })
 
+    if extracted:
+        return extracted
+
+    # 6. Direct python-style function call in prose or code blocks: tool_name(param1="...", ...)
+    fn_matches = re.finditer(r'(?:^|[^\w\.])([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)', content, re.DOTALL)
+    for m in fn_matches:
+        fn_name = m.group(1).strip()
+        fn_args_str = m.group(2).strip()
+        norm_name, _ = _normalize_tool_call(fn_name, {}, tool_map)
+        if tool_map and norm_name in tool_map:
+            args_dict = {}
+            if fn_args_str:
+                try:
+                    tree = ast.parse(f"{fn_name}({fn_args_str})")
+                    call_node = tree.body[0].value
+                    for kw in call_node.keywords:
+                        try:
+                            args_dict[kw.arg] = ast.literal_eval(kw.value)
+                        except Exception:
+                            args_dict[kw.arg] = str(kw.value)
+                except Exception:
+                    pairs = re.findall(r'(\w+)\s*=\s*(?:\"([^\"]*)\"|\'([^\']*)\'|([^\s,\)]+))', fn_args_str)
+                    for k, v1, v2, v3 in pairs:
+                        args_dict[k] = v1 or v2 or v3
+            _, norm_args = _normalize_tool_call(fn_name, args_dict, tool_map)
+            extracted.append({
+                "name": norm_name,
+                "args": norm_args,
+                "id": f"call_{uuid.uuid4().hex[:8]}"
+            })
+
     return extracted
 
 
@@ -265,7 +470,9 @@ def _clean_tool_call_text(content: str) -> str:
     cleaned = content
     cleaned = re.sub(r"<\|tool_call_start\|>.*?<\|tool_call_end\|>", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"<tool_call>.*?</tool_call>", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"(?:Action|Tool):\s*\w+\s*\n(?:Action\s+Input|Tool\s+Input|Args|Parameters):\s*(?:[^\n]+|\{.*?\})", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<invoke\s+name=[\"\']\w+[\"\']>.*?</invoke>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"(?:Action|Tool):\s*\w+\s*\n(?:Action\s+Input|Tool\s+Input|Input|Args|Parameters|Arguments):\s*(?:[^\n]+|\{.*?\})", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"```(?:json)?\s*\{\s*\"(?:tool|name|action)\".*?\}\s*```", "", cleaned, flags=re.DOTALL)
     return cleaned.strip()
 
 
@@ -283,6 +490,40 @@ _SUCCESS_CLAIM_RE = re.compile(
     r"\"status\"\s*:\s*\"success\"|results?:\s*\n?.*verification)",
     re.IGNORECASE,
 )
+
+# Broader: ANY operational goal that should normally be fulfilled by a real tool
+# round (not just file/screenshot ops). Used to catch models that narrate tool
+# usage in prose without ever emitting a tool call.
+_OPERATIONAL_GOAL_RE = re.compile(
+    r"\b(scan|port\s*scan|nmap|recon|probe|enumerate|audit|sast|cve|exploit|poc|"
+    r"git\s+(status|diff|commit|clone|log)|clone|grep|glob|search\s+(the\s+)?(web|code|online)|"
+    r"web\s*search|google|browse|lookup|fetch|curl|wget|run|execute|bash|shell|terminal|command|"
+    r"install|list\s+files|find\s+file|view\s+file|read\s+file|edit\s+file|write\s+file|"
+    r"screenshot|capture|download|cp\s|mkdir|save|create\s+file|test|build|compile)\b",
+    re.IGNORECASE,
+)
+
+# Prose that claims an action was PERFORMED (past tense) rather than proposed.
+_NARRATED_EXECUTION_RE = re.compile(
+    r"\b(i\s+(ran|executed|scanned|searched|cloned|found|checked|audited|probed|"
+    r"captured|saved|created|wrote|installed|fetched|retrieved|discovered|verified|"
+    r"have\s+(run|executed|completed|scanned|searched|found)|"
+    r"'ve\s+(run|executed|completed|scanned|searched|found))|"
+    r"here\s+(are|is)\s+the\s+(results?|output|findings?|open\s+ports?)|"
+    r"the\s+(scan|search|audit|command|probe)\s+(found|returned|shows?|revealed|completed)|"
+    r"(results?|output|findings?)\s*:|open\s+ports?\s*(are|:))\b",
+    re.IGNORECASE,
+)
+
+
+def _goal_is_operational(user_goal: str) -> bool:
+    """True when the goal should normally require at least one real tool round."""
+    return bool(_OPERATIONAL_GOAL_RE.search(user_goal or ""))
+
+
+def _claims_execution(text: str) -> bool:
+    """True when prose claims an action was already performed (past tense narration)."""
+    return bool(_NARRATED_EXECUTION_RE.search(text or ""))
 
 
 def _task_needs_execution(user_goal: str) -> bool:
@@ -356,6 +597,7 @@ from ..sec_tools import (
     append_file,
     bash_cli,
     bash_security_exec,
+    capture_screenshot,
     cve_advisory_search,
     edit_file,
     evidence_recorder,
@@ -512,7 +754,9 @@ class MultiAgentSecOpsOrchestrator:
             import re
             m = re.search(r"\b(?:https?://)?([a-zA-Z0-9][-a-zA-Z0-9.]*\.[a-zA-Z]{2,}|localhost|127\.0\.0\.1)(?::\d+)?\b", task)
             target = m.group(1) if m else "authorized.example"
-            scan_out = self._invoke_tool_safely(recon_port_scan, {"target": target, "ports": "80,443,8080"}, "ReconAgent")
+            m_ports = re.search(r"\bports?\s*[:=]?\s*([0-9][0-9,\s-]*)", task, re.IGNORECASE)
+            ports = m_ports.group(1).replace(" ", "").rstrip(",-") if m_ports else "80,443,8080"
+            scan_out = self._invoke_tool_safely(recon_port_scan, {"target": target, "ports": ports}, "ReconAgent")
             probe_out = self._invoke_tool_safely(web_surface_probe, {"url": f"https://{target}"}, "ReconAgent")
             output = f"[ReconAgent Results for {target}]\nPorts:\n{scan_out}\nSurface:\n{probe_out}"
 
@@ -550,9 +794,22 @@ class MultiAgentSecOpsOrchestrator:
                     output = "DevAgent: Invalid URL for skill install."
             elif any(k in task_low for k in ("run command", "terminal", "bash", "execute command")) or task.strip().startswith("$") or task.strip().startswith("!"):
                 cmd = task.strip().lstrip("$!").strip()
+                for pfx in ("run command", "execute command", "run the command", "execute the command", "bash", "terminal"):
+                    if cmd.lower().startswith(pfx):
+                        cmd = cmd[len(pfx):].strip(" :\"'")
+                        break
                 output = self._invoke_tool_safely(bash_cli, {"command": cmd}, "DevAgent")
             elif "grep" in task_low or "search" in task_low:
-                q = task.split()[-1].strip("\"'") if len(task.split()) > 1 else "def "
+                m_q = re.search(r'["\']([^"\']+)["\']', task)
+                if m_q:
+                    q = m_q.group(1)
+                else:
+                    q_str = task
+                    for pfx in ("grep for", "search for", "grep", "search code for", "search in files for", "search"):
+                        if task_low.startswith(pfx):
+                            q_str = task[len(pfx):].strip(" :\"'")
+                            break
+                    q = q_str if q_str else "def "
                 output = self._invoke_tool_safely(grep_search, {"query": q}, "DevAgent")
             else:
                 output = self._invoke_tool_safely(glob_files, {"pattern": "*"}, "DevAgent")
@@ -771,7 +1028,12 @@ class MultiAgentSecOpsOrchestrator:
             except Exception:
                 model_to_call = chat_model
 
-        prompt_msgs = [SystemMessage(content=system_prompt)] + list(state["messages"][-5:])
+        full_system_prompt = system_prompt
+        catalog_text = _format_tools_prompt_catalog(tools)
+        if catalog_text:
+            full_system_prompt = f"{system_prompt}\n\n{catalog_text}"
+
+        prompt_msgs = [SystemMessage(content=full_system_prompt)] + list(state["messages"][-5:])
         prompt_msgs = self.pipeline.run_before_llm(prompt_msgs, {"agent": agent_name.capitalize()})
         cb = _stream_callback_var.get()
 
@@ -840,7 +1102,19 @@ class MultiAgentSecOpsOrchestrator:
                         and (_claims_success or len(content_str) > 400)
                         and forced_exec_retries < 4 and iteration < max_iterations - 1
                     )
-                    if _is_planning_only or _is_hallucinated_exec:
+                    # GENERAL fabricated-completion guard (beyond file/screenshot ops):
+                    # the goal is operational (scan/search/git/audit/run/...), NO tool has
+                    # run yet, and the model narrated an action as done. Force a real tool
+                    # round instead of accepting narrated prose as the final answer.
+                    _is_fabricated_completion = (
+                        not _is_hallucinated_exec
+                        and bool(tool_map)
+                        and _tool_msgs_so_far == 0
+                        and _goal_is_operational(_user_goal)
+                        and _claims_execution(content_str)
+                        and forced_exec_retries < 4 and iteration < max_iterations - 1
+                    )
+                    if _is_planning_only or _is_hallucinated_exec or _is_fabricated_completion:
                         # Inject a continuation prompt to push from planning → acting
                         current_msgs.append(AIMessage(content=content_str))
                         if _is_hallucinated_exec:
@@ -851,6 +1125,17 @@ class MultiAgentSecOpsOrchestrator:
                                     "That is fabricated — the files do not exist. Now execute REAL tool calls: "
                                     "use capture_screenshot(url, output_file) then bash_cli(command=\"ls -lh <file> && file <file>\") to verify. "
                                     "Only report success with observed ToolMessage output. If the browser extra is missing, report the real error."
+                                )
+                            ))
+                        elif _is_fabricated_completion:
+                            forced_exec_retries += 1
+                            current_msgs.append(HumanMessage(
+                                content=(
+                                    "You described results in prose but executed ZERO tools, so those results are fabricated — "
+                                    "no scan, search, or command actually ran. Do NOT narrate what a tool would return. "
+                                    "Emit a real tool call now (the available tools are bound to you) and wait for the actual "
+                                    "ToolMessage output before reporting anything. If no tool fits the request, say so plainly "
+                                    "instead of inventing output."
                                 )
                             ))
                         else:
@@ -986,6 +1271,24 @@ class MultiAgentSecOpsOrchestrator:
                             "- Retry the task (sometimes the model complies on a fresh attempt)\n"
                             "- `/model` — switch to a stronger model (reasoning/free-tier routers often ignore tool calls)\n"
                             "- Run the first step directly: `bash_cli(command=\"ls -lh <dir>\")` to confirm the workspace, then re-issue the task\n"
+                            "- `/doctor` — diagnose provider/model health"
+                        )
+                    )
+                elif (
+                    _goal_is_operational(_final_goal)
+                    and _final_obs == 0
+                    and _claims_execution(_final_text)
+                ):
+                    response = AIMessage(
+                        content=(
+                            "❌ **Could not complete: no tools were actually executed.**\n\n"
+                            f"Goal was: **{_final_goal[:300]}**\n\n"
+                            "The model narrated results (scan/search/command output) in prose but produced "
+                            "zero tool observations after repeated attempts, so nothing actually ran. "
+                            "I am not reporting fabricated results.\n\n"
+                            "**Next steps (pick one):**\n"
+                            "- Retry the task (the model sometimes complies on a fresh attempt)\n"
+                            "- `/model` — switch to a stronger model (free-tier/reasoning routers often ignore tool calls)\n"
                             "- `/doctor` — diagnose provider/model health"
                         )
                     )
@@ -1526,6 +1829,11 @@ class MultiAgentSecOpsOrchestrator:
                     cmd = cmd[1:].strip()
                 elif last_lower.startswith("/bash "):
                     cmd = last_message[6:].strip()
+                else:
+                    for pfx in ("run command", "execute command", "run the command", "execute the command"):
+                        if cmd.lower().startswith(pfx):
+                            cmd = cmd[len(pfx):].strip(" :\"'")
+                            break
                 cmd_out = await asyncio.to_thread(self._invoke_tool_safely, bash_cli, {"command": cmd}, "DevAgent")
                 try:
                     res_j = json.loads(cmd_out)
@@ -1556,12 +1864,12 @@ class MultiAgentSecOpsOrchestrator:
             # deterministic "Web Search Results" output regardless of active LLM provider.
             _is_web_search = any(k in last_lower for k in (
                 "search the web", "web search", "google search", "search online",
-                "lookup online", "search for", "find online", "/search", "/web",
-            )) and not any(k in last_lower for k in ("grep", "code search", "sast", "cve"))
+                "lookup online", "find online", "/search", "/web", "google ",
+            )) and not any(k in last_lower for k in ("grep", "code search", "sast", "cve", "file", "directory", "in codebase"))
             if _is_web_search:
                 q = last_message
                 for prefix in ("/search", "/web", "/google", "search the web for", "search online for",
-                               "web search for", "google for", "google", "search for", "search", "lookup"):
+                               "web search for", "google for", "google", "lookup online"):
                     if last_lower.startswith(prefix):
                         q = last_message[len(prefix):].strip(" :\"'")
                         break

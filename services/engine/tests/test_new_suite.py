@@ -901,3 +901,126 @@ def test_dynamic_scope_adaptation_and_large_file_strategies(tmp_path):
     assert cmd_res["success"] is True
     assert out_capture.exists()
     assert "Streamed output directly to disk" in out_capture.read_text()
+
+
+def test_tool_selection_and_multi_format_extraction():
+    """Verify tool call extraction and parameter normalization across varied LLM output formats."""
+    from langchain_core.messages import AIMessage
+    from scopeforge_engine.agents.graph import (
+        _extract_tool_calls,
+        _normalize_tool_call,
+        _format_tools_prompt_catalog,
+        _clean_tool_call_text,
+    )
+    from scopeforge_engine.sec_tools import (
+        view_file,
+        edit_file,
+        write_file,
+        glob_files,
+        grep_search,
+        bash_cli,
+        google_web_search,
+        recon_port_scan,
+        capture_screenshot,
+    )
+
+    tools = [
+        view_file,
+        edit_file,
+        write_file,
+        glob_files,
+        grep_search,
+        bash_cli,
+        google_web_search,
+        recon_port_scan,
+        capture_screenshot,
+    ]
+    tool_map = {t.name: t for t in tools}
+
+    # 1. Format prompt catalog includes all tools and formats
+    catalog = _format_tools_prompt_catalog(tools)
+    assert "## AVAILABLE TOOLS AND CALLING CONVENTIONS" in catalog
+    assert "view_file" in catalog
+    assert "grep_search" in catalog
+    assert "bash_cli" in catalog
+    assert "TOOL CALLING FORMAT" in catalog
+
+    # 2. Python function call in text
+    msg1 = AIMessage(content='Let me view that file:\nview_file(file_path="src/main.py", start_line=1, end_line=50)')
+    res1 = _extract_tool_calls(msg1, tool_map)
+    assert len(res1) == 1
+    assert res1[0]["name"] == "view_file"
+    assert res1[0]["args"]["file_path"] == "src/main.py"
+    assert res1[0]["args"]["start_line"] == 1
+    assert res1[0]["args"]["end_line"] == 50
+
+    # 3. Python function call inside markdown code block
+    msg2 = AIMessage(content='```python\ngrep_search(query="TODO", directory="src")\n```')
+    res2 = _extract_tool_calls(msg2, tool_map)
+    assert len(res2) == 1
+    assert res2[0]["name"] == "grep_search"
+    assert res2[0]["args"]["query"] == "TODO"
+
+    # 4. XML <tool_call> with tags
+    msg3 = AIMessage(content='<tool_call>\n<name>recon_port_scan</name>\n<arguments>{"target": "localhost", "ports": "80,443"}</arguments>\n</tool_call>')
+    res3 = _extract_tool_calls(msg3, tool_map)
+    assert len(res3) == 1
+    assert res3[0]["name"] == "recon_port_scan"
+    assert res3[0]["args"]["target"] == "localhost"
+    assert res3[0]["args"]["ports"] == "80,443"
+
+    # 5. XML <invoke> tag
+    msg4 = AIMessage(content='<invoke name="capture_screenshot"><parameter name="url">https://example.com</parameter><parameter name="output_file">shot.png</parameter></invoke>')
+    res4 = _extract_tool_calls(msg4, tool_map)
+    assert len(res4) == 1
+    assert res4[0]["name"] == "capture_screenshot"
+    assert res4[0]["args"]["url"] == "https://example.com"
+    assert res4[0]["args"]["output_file"] == "shot.png"
+
+    # 6. ReAct format with Action / Input
+    msg5 = AIMessage(content='Action: bash_cli\nAction Input: {"command": "git status"}')
+    res5 = _extract_tool_calls(msg5, tool_map)
+    assert len(res5) == 1
+    assert res5[0]["name"] == "bash_cli"
+    assert res5[0]["args"]["command"] == "git status"
+
+    # 7. ReAct inline function format
+    msg6 = AIMessage(content='Action: glob_files(pattern="*.py", directory=".")')
+    res6 = _extract_tool_calls(msg6, tool_map)
+    assert len(res6) == 1
+    assert res6[0]["name"] == "glob_files"
+    assert res6[0]["args"]["pattern"] == "*.py"
+
+    # 8. Standalone JSON object
+    msg7 = AIMessage(content='Here is my call: {"name": "google_web_search", "arguments": {"query": "python asyncio tutorial"}}')
+    res7 = _extract_tool_calls(msg7, tool_map)
+    assert len(res7) == 1
+    assert res7[0]["name"] == "google_web_search"
+    assert res7[0]["args"]["query"] == "python asyncio tutorial"
+
+    # 9. Qwen / ChatML syntax
+    msg8 = AIMessage(content='<|tool_call_start|>[edit_file(file_path="foo.py", target_content="old", replacement_content="new")]<|tool_call_end|>')
+    res8 = _extract_tool_calls(msg8, tool_map)
+    assert len(res8) == 1
+    assert res8[0]["name"] == "edit_file"
+    assert res8[0]["args"]["file_path"] == "foo.py"
+    assert res8[0]["args"]["target_content"] == "old"
+    assert res8[0]["args"]["replacement_content"] == "new"
+
+    # 10. Normalization of tool alias and argument aliases
+    norm_name, norm_args = _normalize_tool_call("read_file", {"path": "/tmp/test.txt"}, tool_map)
+    assert norm_name == "view_file"
+    assert norm_args["file_path"] == "/tmp/test.txt"
+
+    norm_name2, norm_args2 = _normalize_tool_call("terminal", {"cmd": "pytest"}, tool_map)
+    assert norm_name2 == "bash_cli"
+    assert norm_args2["command"] == "pytest"
+
+    norm_name3, norm_args3 = _normalize_tool_call("code_search", {"q": "class Orchestrator"}, tool_map)
+    assert norm_name3 == "grep_search"
+    assert norm_args3["query"] == "class Orchestrator"
+
+    # 11. Clean tool call text strips XML and ReAct tags
+    raw_text = '<tool_call><name>bash_cli</name></tool_call>\nAnalysis complete.'
+    assert _clean_tool_call_text(raw_text) == 'Analysis complete.'
+
