@@ -1,7 +1,7 @@
 # ScopeForge
 
-> **Commercial-Grade Cybersecurity Multi-Agent Harness & Claude Code Style TUI**  
-> Autonomous SecOps Orchestrator, LangGraph Multi-Agent Team, LangChain Tool Harness, MCP Bridge & Interactive Terminal UI.
+> **Commercial-Grade Autonomous AI Agent Harness & Coding Assistant**  
+> Claude Code & Antigravity Style Terminal Assistant, LangGraph Multi-Agent Team, LangChain Tool Harness, Real-Time Hardware Resource Telemetry, Persistent Session Management & Specialized Cybersecurity Swarms.
 
 [![PyPI version](https://img.shields.io/pypi/v/scopeforge.svg)](https://pypi.org/project/scopeforge/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/scopeforge.svg)](https://pypi.org/project/scopeforge/)
@@ -13,9 +13,14 @@
 
 ## ⚡ What is ScopeForge?
 
-**ScopeForge** is a standalone, commercial-grade autonomous cybersecurity agent harness and terminal interface designed to work like **Claude Code** and **Open Code**, but specifically engineered with **ScopeGate Rules of Engagement (RoE)** safety guarantees.
+**ScopeForge** is a commercial-grade autonomous AI coding assistant and agent harness designed to compete directly with **Claude Code**, **Antigravity**, and **Open Code**. It operates seamlessly as a full-featured general developer harness for software engineering, code refactoring, system automation, web research, and tool orchestration—while offering specialized built-in cybersecurity swarms (ScopeGate RoE sandbox, SAST code auditing, port scanning, and falsifiable proof-of-concept verification) as an advanced capability.
 
-Powered by **LangChain**, **LangGraph**, **Textual**, and the **Model Context Protocol (MCP)**, ScopeForge coordinates specialized cybersecurity agents to perform automated reconnaissance, vulnerability scanning, static code analysis (SAST), proof-of-concept verification, and executive reporting—or operates as a general-purpose AI coding and system administration assistant.
+### 🌟 Key Commercial Agent Features:
+- **Claude Code & AGY Native Scrollback Interface**: Runs cleanly in your terminal without screen clobbering, with real-time markdown streaming, dynamic tool cards, and two-line prompt outline.
+- **Hardware & Device Awareness**: Real-time telemetry displaying CPU core count, system RAM capacity, platform architecture, and running token / dollar cost estimations.
+- **Session Persistence & Context Management (`/resume`, `/context`, `/history`)**: Automatically persists sessions to `~/.scopeforge/sessions/`, allows listing and resuming past conversations seamlessly, and provides full context inspection.
+- **Flexible Memory & Extensibility Control (`/clear`, `/reset`, `/reload`)**: Reset memory, conversation context, rescan workspace skills, or reconnect MCP bridges on-the-fly.
+- **Unpacked & Compact Tool Output Cards**: Automatically unwraps JSON outputs from bash commands and tools, caps verbose logs to 6 lines max with clean expansion, and eliminates terminal clutter.
 
 ---
 
