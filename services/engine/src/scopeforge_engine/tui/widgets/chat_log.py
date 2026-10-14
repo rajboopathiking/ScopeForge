@@ -54,13 +54,12 @@ class ChatStream(Widget):
         log = self.query_one("#chat-log", RichLog)
         banner = (
             "[bold #58a6ff]╭─────────────────────────────────────────────────────────────────────────────╮[/]\n"
-            "[bold #58a6ff]│  ⚡ SCOPEFORGE — Cybersecurity Multi-Agent Terminal Harness                │[/]\n"
-            "[bold #58a6ff]│  LangChain • LangGraph • LlamaIndex RAG • LLM Wiki • MCP • A2A Protocol    │[/]\n"
+            "[bold #58a6ff]│  ⚡ SCOPEFORGE — Autonomous AI Agent Harness & Coding Assistant             │[/]\n"
+            "[bold #58a6ff]│  Terminal Execution · Multi-Agent Swarm · MCP Bridge · Skills · A2A Protocol │[/]\n"
             "[bold #58a6ff]╰─────────────────────────────────────────────────────────────────────────────╯[/]\n\n"
-            "[dim]• Mode: [bold green]PLAN[/] (Safe exploration, 0 target packets)[/]\n"
-            "[dim]• Type [bold cyan]/help[/] for commands or press [bold cyan]F1[/] for keyboard shortcuts.[/]\n"
-            "[dim]• Press [bold cyan]F2[/] to toggle sidebar | [bold cyan]F3[/] to cycle mode | [bold cyan]F4[/] to open Wiki[/]\n"
-            "[dim]• Press [bold cyan]F6[/] (or /copy) to copy last agent response to system clipboard[/]\n"
+            "[dim]• Ready: [bold green]Autonomous Goal-Based Execution[/] (Coding, DevOps, Debugging, Security)[/]\n"
+            "[dim]• Commands: Type [bold cyan]/help[/] or press [bold cyan]Ctrl+H[/] (F1) for command reference.[/]\n"
+            "[dim]• Shortkeys: [bold cyan]Ctrl+M[/] Model Picker | [bold cyan]Ctrl+B[/] Sidebar | [bold cyan]Ctrl+O[/] Mode | [bold cyan]Ctrl+Y[/] Copy[/]\n"
         )
         log.write(banner)
 
@@ -191,32 +190,103 @@ class ChatStream(Widget):
     def add_tool_call(self, tool_name: str, args: Dict[str, Any], status: str = "RUNNING"):
         if getattr(self, "_stream_active", False):
             self.finish_agent_stream()
-        args_str = json.dumps(args, default=str)
-        if len(args_str) > 100:
-            args_str = args_str[:97] + "..."
+
+        t_lower = tool_name.lower()
+        if "bash" in t_lower or "shell" in t_lower or "terminal" in t_lower:
+            icon = "⚡"
+            category = "Terminal"
+        elif "file" in t_lower or "read" in t_lower or "write" in t_lower or "append" in t_lower:
+            icon = "📄"
+            category = "File"
+        elif "git" in t_lower:
+            icon = "🌿"
+            category = "Git"
+        elif "search" in t_lower or "web" in t_lower:
+            icon = "🌐"
+            category = "Search"
+        elif "scan" in t_lower or "cve" in t_lower or "recon" in t_lower:
+            icon = "🛡️"
+            category = "Recon"
+        elif "screenshot" in t_lower:
+            icon = "📸"
+            category = "Capture"
+        elif "mcp" in t_lower:
+            icon = "🔌"
+            category = "MCP"
+        else:
+            icon = "⚙️"
+            category = "Tool"
+
         status_color = "green" if status in ("SUCCESS", "COMPLETED") else ("red" if "BLOCK" in status or "FAIL" in status else "yellow")
+
+        detail_lines = []
+        if "command" in args:
+            cmd = self._escape(str(args["command"]))
+            detail_lines.append(f"[bold green]❯[/] [bold bright_yellow]{cmd}[/]")
+            if "working_dir" in args or "cwd" in args:
+                d = self._escape(str(args.get("working_dir") or args.get("cwd")))
+                detail_lines.append(f"  [dim]cwd:[/] [dim]{d}[/]")
+        elif "file_path" in args or "path" in args or "target_file" in args:
+            p = self._escape(str(args.get("file_path") or args.get("path") or args.get("target_file")))
+            detail_lines.append(f"[dim]path:[/] [bold #79c0ff]{p}[/]")
+            if "start_line" in args:
+                detail_lines.append(f"[dim]range:[/] [cyan]lines {args.get('start_line')}-{args.get('end_line', 'end')}[/]")
+        elif "query" in args:
+            q = self._escape(str(args["query"]))
+            detail_lines.append(f"[dim]query:[/] [bold #e6edf3]{q}[/]")
+        elif "target" in args:
+            tgt = self._escape(str(args["target"]))
+            detail_lines.append(f"[dim]target:[/] [bold yellow]{tgt}[/]")
+        else:
+            args_str = json.dumps(args, default=str)
+            if len(args_str) > 120:
+                args_str = args_str[:117] + "..."
+            detail_lines.append(f"[dim]arguments:[/] {self._escape(args_str)}")
+
         try:
             log = self.query_one("#chat-log", RichLog)
-            log.write(f"\n  [dim #8b949e]╭─ ⚙️ [bold #58a6ff]Tool Call:[/] [bold #f0883e]{self._escape(tool_name)}[/] [{status_color}][{status}][/] ───────────────────────╮[/]")
-            log.write(f"  [dim #8b949e]│[/] [dim]Arguments:[/] {self._escape(args_str)}")
-            log.write(f"  [dim #8b949e]╰────────────────────────────────────────────────────────╯[/]\n")
+            log.write(f"\n  [dim #30363d]╭─[/] [bold #58a6ff]{icon} {self._escape(tool_name)}[/] [dim]· {category}[/] [{status_color}][{status}][/{status_color}] [dim #30363d]──────────────────────────────[/]")
+            for d in detail_lines:
+                log.write(f"  [dim #30363d]│[/]  {d}")
+            log.write(f"  [dim #30363d]╰─────────────────────────────────────────────────────────────[/]\n")
         except Exception:
             pass
 
     def add_tool_result(self, tool_name: str, result: str, status: str = "SUCCESS"):
         if getattr(self, "_stream_active", False):
             self.finish_agent_stream()
-        status_color = "green" if status == "SUCCESS" else "red"
-        lines = result.strip().splitlines()
-        preview = "\n".join(lines[:6])
-        if len(lines) > 6:
-            preview += f"\n... ({len(lines) - 6} more lines)"
+        res_str = str(result or "").strip()
+        is_error = any(
+            err in res_str.lower()
+            for err in ("error:", "traceback", "failed", "command failed", "not registered", "exit code 1")
+        )
+        status_icon = "✗" if is_error else "✓"
+        status_color = "red" if is_error else "green"
+
+        lines = res_str.splitlines() if res_str else []
+        total_lines = len(lines)
+
+        max_lines = 10
+        if total_lines == 0:
+            preview_lines = ["[dim italic]Completed with empty stdout[/dim italic]"]
+            footer = ""
+        elif total_lines <= max_lines:
+            preview_lines = [self._escape(l[:140]) for l in lines]
+            footer = f"[dim]({total_lines} lines)[/dim]"
+        else:
+            preview_lines = (
+                [self._escape(l[:140]) for l in lines[:7]]
+                + [f"[dim]... ({total_lines - 9} more lines hidden) ...[/dim]"]
+                + [self._escape(l[:140]) for l in lines[-2:]]
+            )
+            footer = f"[dim]({total_lines} total lines · showing 9)[/dim]"
+
         try:
             log = self.query_one("#chat-log", RichLog)
-            log.write(f"  [dim #8b949e]╭─ 📦 [bold {status_color}]{self._escape(tool_name)} Result[/] [{status_color}][{status}][/] ──────────────────────────╮[/]")
-            for p_line in preview.splitlines():
-                log.write(f"  [dim #8b949e]│[/] {self._escape(p_line)}")
-            log.write(f"  [dim #8b949e]╰────────────────────────────────────────────────────────╯[/]\n")
+            log.write(f"  [dim #30363d]┌─[/] [bold {status_color}]{status_icon} {self._escape(tool_name)} Result[/] {footer} [dim #30363d]──────────────────────────────[/]")
+            for p_line in preview_lines:
+                log.write(f"  [dim #30363d]│[/]  {p_line}")
+            log.write(f"  [dim #30363d]└─────────────────────────────────────────────────────────────[/]\n")
         except Exception:
             pass
 

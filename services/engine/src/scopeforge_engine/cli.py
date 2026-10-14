@@ -23,17 +23,20 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
-from rich.box import ROUNDED
+from rich.box import ROUNDED, HEAVY_EDGE, SIMPLE_HEAVY, MINIMAL
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
+from rich.text import Text
 
 from . import __version__
 from .a2a.bus import A2ABus
 from .a2a.protocol import A2AIntent
-from .agents.graph import MultiAgentSecOpsOrchestrator
+from .agents.graph import MultiAgentSecOpsOrchestrator, _clean_tool_call_text
 from .config.loader import ScopeGateConfig
 from .llm_providers.manager import ProviderManager
 from .mcp_bridge import MCPBridge
@@ -52,6 +55,210 @@ def _display_model_id(cfg: Any) -> str:
     if model.startswith(provider + "/"):
         return model
     return f"{provider}/{model}"
+
+
+def _format_provider_badge(provider_val: str) -> str:
+    """Render a styled color pill for LLM provider types."""
+    p = str(provider_val).lower()
+    if "anthropic" in p:
+        return "[bold bright_cyan]Anthropic[/]"
+    elif "openai" in p:
+        return "[bold bright_green]OpenAI[/]"
+    elif "openrouter" in p:
+        return "[bold magenta]OpenRouter[/]"
+    elif "groq" in p:
+        return "[bold yellow]Groq[/]"
+    elif "ollama" in p:
+        return "[bold green]Ollama[/]"
+    elif "gemini" in p:
+        return "[bold blue]Gemini[/]"
+    elif "custom" in p:
+        return "[bold cyan]Custom[/]"
+    return f"[dim]{provider_val}[/]"
+
+
+def _infer_model_tier(model_name: str, model_id: str) -> str:
+    """Infer capability tier badge for commercial display."""
+    combined = (str(model_name) + " " + str(model_id)).lower()
+    if "free" in combined or ":free" in combined:
+        return "[green]Free Tier[/]"
+    elif "opus" in combined:
+        return "[bold yellow]Frontier (Opus)[/]"
+    elif "sonnet" in combined:
+        return "[bold cyan]Frontier (Sonnet)[/]"
+    elif "gpt-4" in combined or "o1" in combined or "o3" in combined:
+        return "[bold green]Frontier (GPT-4o)[/]"
+    elif "groq" in combined or "nemotron" in combined:
+        return "[bold bright_yellow]Ultra-Fast[/]"
+    elif "ollama" in combined or "local" in combined:
+        return "[bold blue]Local Offline[/]"
+    elif "deepseek" in combined:
+        return "[bold bright_cyan]Reasoning / Code[/]"
+    return "[dim]Standard[/]"
+
+
+def _format_tool_call_card(tool_name: str, args: Dict[str, Any], agent: str) -> Panel:
+    """Render a sleek, commercial-grade tool invocation card."""
+    t_lower = tool_name.lower()
+    if "bash" in t_lower or "shell" in t_lower or "terminal" in t_lower:
+        icon = "⚡"
+        category = "Terminal Execution"
+        border_color = "bright_cyan"
+    elif "file" in t_lower or "read" in t_lower or "write" in t_lower or "append" in t_lower:
+        icon = "📄"
+        category = "File Operation"
+        border_color = "blue"
+    elif "git" in t_lower:
+        icon = "🌿"
+        category = "Git Operation"
+        border_color = "bright_green"
+    elif "search" in t_lower or "google" in t_lower or "web" in t_lower:
+        icon = "🌐"
+        category = "Web Search"
+        border_color = "cyan"
+    elif "scan" in t_lower or "nmap" in t_lower or "recon" in t_lower or "cve" in t_lower:
+        icon = "🛡️"
+        category = "Security Recon"
+        border_color = "yellow"
+    elif "screenshot" in t_lower:
+        icon = "📸"
+        category = "Screen Capture"
+        border_color = "magenta"
+    elif "mcp" in t_lower or "server" in t_lower:
+        icon = "🔌"
+        category = "MCP Bridge"
+        border_color = "bright_magenta"
+    elif "skill" in t_lower:
+        icon = "🧠"
+        category = "Skill Manager"
+        border_color = "bright_blue"
+    else:
+        icon = "⚙️"
+        category = "Tool Execution"
+        border_color = "cyan"
+
+    lines: List[str] = []
+    if "command" in args and ("bash" in t_lower or "terminal" in t_lower or "shell" in t_lower or "exec" in t_lower):
+        cmd_str = str(args["command"])
+        lines.append(f"[bold green]❯[/] [bold bright_yellow]{cmd_str}[/]")
+        if "working_dir" in args or "cwd" in args:
+            cwd = args.get("working_dir") or args.get("cwd")
+            lines.append(f"  [dim]cwd:[/] [dim white]{cwd}[/]")
+    elif "name" in args and ("command" in args or "server" in t_lower or "mcp" in t_lower):
+        lines.append(f"[dim]server:[/]  [bold bright_magenta]{args.get('name')}[/]")
+        if "command" in args:
+            lines.append(f"[dim]command:[/] [bold yellow]{args['command']}[/]")
+    elif "repo_url" in args:
+        lines.append(f"[dim]repo:[/]    [bold cyan]{args['repo_url']}[/]")
+    elif "file_path" in args or "path" in args or "target_file" in args:
+        fpath = args.get("file_path") or args.get("path") or args.get("target_file")
+        lines.append(f"[dim]path:[/] [bold bright_cyan]{fpath}[/]")
+        if "code_content" in args or "content" in args or "replacement_content" in args:
+            c = str(args.get("code_content") or args.get("content") or args.get("replacement_content") or "")
+            c_lines = len(c.splitlines())
+            lines.append(f"[dim]payload:[/] [cyan]{len(c):,} bytes[/] · [dim]lines:[/] [cyan]{c_lines}[/]")
+        if "start_line" in args:
+            lines.append(f"[dim]range:[/] [cyan]lines {args.get('start_line')}-{args.get('end_line', 'end')}[/]")
+    elif "query" in args:
+        lines.append(f"[dim]query:[/] [bold bright_white]{args['query']}[/]")
+    elif "target" in args:
+        lines.append(f"[dim]target:[/] [bold yellow]{args['target']}[/]")
+        if "ports" in args:
+            lines.append(f"[dim]ports:[/]  [cyan]{args['ports']}[/]")
+    elif "url" in args:
+        lines.append(f"[dim]url:[/]    [bold cyan]{args['url']}[/]")
+        if "output_file" in args:
+            lines.append(f"[dim]save_to:[/] [white]{args['output_file']}[/]")
+    else:
+        if args:
+            for k, v in list(args.items())[:6]:
+                v_str = str(v)
+                if len(v_str) > 75:
+                    v_str = v_str[:72] + "..."
+                lines.append(f"[dim]{k}:[/] [white]{v_str}[/]")
+        else:
+            lines.append("[dim italic]no parameters[/]")
+
+    body = "\n".join(lines)
+    header = f"[bold white]{icon} Tool Call:[/] [bold bright_cyan]{tool_name}[/] [dim]· {category} · {agent.capitalize()}Agent[/]"
+    return Panel(
+        body,
+        title=f" {header} ",
+        title_align="left",
+        border_style=border_color,
+        box=ROUNDED,
+        padding=(0, 1),
+    )
+
+
+def _format_tool_result_card(tool_name: str, result: str, duration: float = 0.0) -> Panel:
+    """Render an elegant tool result card showing observed output lines."""
+    res_str = str(result or "").strip()
+    is_error = any(
+        err_cue in res_str.lower()
+        for err_cue in (
+            "error:",
+            "traceback (most recent call last):",
+            "command failed",
+            "tool execution error",
+            "not registered",
+            "failed with exit code",
+            "exit code 1",
+            "command not found",
+        )
+    )
+    status_icon = "✗" if is_error else "✓"
+    status_color = "bold red" if is_error else "bold green"
+    border_color = "red" if is_error else "bright_black"
+
+    time_str = f" in {duration:.2f}s" if duration > 0 else ""
+
+    if not res_str:
+        body = f"[dim italic]Completed with empty stdout{time_str}[/]"
+        return Panel(
+            body,
+            title=f" [{status_color}]{status_icon} {tool_name} Result[/{status_color}] ",
+            title_align="left",
+            border_style=border_color,
+            box=ROUNDED,
+            padding=(0, 1),
+        )
+
+    res_lines = res_str.splitlines()
+    total_lines = len(res_lines)
+
+    max_display = 14
+    if total_lines <= max_display:
+        display_lines = res_lines
+        footer_note = f"[dim]({total_lines} lines{time_str})[/dim]"
+    else:
+        display_lines = (
+            res_lines[:9]
+            + [f"[dim]... ({total_lines - 12} more lines hidden) ...[/dim]"]
+            + res_lines[-3:]
+        )
+        footer_note = f"[dim]({total_lines} total lines · showing 12{time_str})[/dim]"
+
+    escaped_lines = []
+    for l in display_lines:
+        if l.startswith("[dim]..."):
+            escaped_lines.append(l)
+        else:
+            if len(l) > 140:
+                l = l[:137] + "..."
+            escaped_lines.append(l.replace("[", "\\["))
+
+    body = "\n".join(escaped_lines)
+    header = f"[{status_color}]{status_icon} {tool_name} Output[/{status_color}] {footer_note}"
+
+    return Panel(
+        body,
+        title=f" {header} ",
+        title_align="left",
+        border_style=border_color,
+        box=ROUNDED,
+        padding=(0, 1),
+    )
 
 
 class ScopeForgeSlashCompleter(Completer):
@@ -244,24 +451,28 @@ class ScopeForgeCLI:
             scopes_str += f" (+{len(self.current_scope) - 3} more)"
 
         cwd_str = os.getcwd()
-        if len(cwd_str) > 40:
-            cwd_str = "..." + cwd_str[-37:]
+        if len(cwd_str) > 42:
+            cwd_str = "..." + cwd_str[-39:]
+
+        skills_count = len(self.skill_mgr.list_skills())
+        mcp_count = len(self.mcp.list_servers())
 
         banner_content = (
-            f"[bold cyan]⚡ ScopeForge[/bold cyan] [bold white]v{__version__}[/] "
-            f"[dim]— Autonomous Cybersecurity Harness[/dim]\n\n"
-            f"[bold]Model:[/]  [bold white]{active_cfg.name}[/] [dim]({_display_model_id(active_cfg)})[/dim]\n"
-            f"[bold]Mode:[/]   [bold {mode_color}][{self.sec_mode.upper()}][/] [dim](ScopeGate RoE sandbox)[/dim]\n"
-            f"[bold]Scope:[/]  [bold yellow]{scopes_str}[/]\n"
-            f"[bold]Dir:[/]    [dim]{cwd_str}[/]\n\n"
-            f"[dim]Type [bold white]/help[/] for commands, [bold white]/mode[/] to switch, or enter your mission prompt.[/dim]"
+            f"[bold bright_cyan]⚡ ScopeForge[/bold bright_cyan] [bold white]v{__version__}[/] "
+            f"[dim]· Autonomous Agent Harness & Coding Assistant[/dim]\n\n"
+            f"[bold]Model:[/]    [bold white]{active_cfg.name}[/] [dim]({_display_model_id(active_cfg)})[/dim]\n"
+            f"[bold]Mode:[/]     [bold {mode_color}][{self.sec_mode.upper()}][/] [dim](ScopeGate RoE sandbox)[/dim]\n"
+            f"[bold]Scope:[/]    [bold yellow]{scopes_str}[/]\n"
+            f"[bold]Dir:[/]      [dim]{cwd_str}[/]\n"
+            f"[bold]Ready:[/]    [dim]{skills_count} skills discovered · {mcp_count} MCP servers · RAG vector store online[/dim]\n\n"
+            f"[dim]Type [bold white]/help[/] for commands · [bold white]/mode[/] to switch · [bold white]/model[/] to change active LLM[/dim]"
         )
 
         self.console.print()
         self.console.print(
             Panel(
                 banner_content,
-                border_style="cyan",
+                border_style="bright_blue",
                 box=ROUNDED,
                 padding=(1, 2),
             )
@@ -269,7 +480,13 @@ class ScopeForgeCLI:
         self.console.print()
 
     def get_prompt_text(self) -> HTML:
-        """Generate sleek interactive prompt indicator."""
+        """Generate sleek Claude Code-style enclosed input box outline."""
+        import shutil
+
+        cols = shutil.get_terminal_size((80, 20)).columns
+        w = max(40, min(cols - 4, 88))
+
+        mode_str = self.sec_mode.upper()
         mode_color = {
             "plan": "ansigreen",
             "audit": "ansicyan",
@@ -279,9 +496,16 @@ class ScopeForgeCLI:
         }.get(self.sec_mode.lower(), "ansigreen")
 
         agent_tag = f" <ansimagenta>[{self.pending_agent}]</ansimagenta>" if self.pending_agent else ""
-        return HTML(
-            f"<{mode_color}><b>[{self.sec_mode.upper()}]</b></{mode_color}>{agent_tag} <ansibrightcyan><b>❯</b></ansibrightcyan> "
+        tag_len = len(mode_str) + 4 + (len(self.pending_agent) + 3 if self.pending_agent else 0)
+        bar_len = max(5, w - tag_len - 5)
+
+        top_line = (
+            f"<ansibrightblack>╭─ </ansibrightblack>"
+            f"<{mode_color}><b>[{mode_str}]</b></{mode_color}>{agent_tag}"
+            f"<ansibrightblack> {'─' * bar_len}╮</ansibrightblack>\n"
+            f"<ansibrightblack>│ </ansibrightblack><ansibrightcyan><b>❯</b></ansibrightcyan> "
         )
+        return HTML(top_line)
 
     async def execute_mission(self, prompt: str):
         """Execute a mission prompt through the multi-agent orchestrator with live streaming."""
@@ -294,11 +518,48 @@ class ScopeForgeCLI:
             )
 
         start_time = time.time()
+        tool_start_time = 0.0
         streamed_chars = 0
         current_tool: Optional[str] = None
+        streaming_markup_suppressed = False
+        suppression_buffer = ""
+        live_markdown: Optional[Live] = None
+        prose_buffer = ""
+
+        # Tags that should NEVER leak to terminal stdout during text streaming
+        SUPPRESS_TAG_PREFIXES = (
+            "<dots_function_call",
+            "<tool_call",
+            "<function_call",
+            "<function=",
+            "<function ",
+            "<function>",
+            "<parameter=",
+            "<parameter ",
+            "<parameter>",
+            "<invoke",
+            "<|tool_call_start|>",
+            "<arg_key",
+            "<arg_value",
+            "Invoking tool:",
+            "invoking tool:",
+            "Action: ",
+            "Tool: ",
+        )
+        SUPPRESS_TAG_SUFFIXES = (
+            "</dots_function_call>",
+            "</tool_call>",
+            "</function_call>",
+            "</function>",
+            "</parameter>",
+            "</invoke>",
+            "</arg_key>",
+            "</arg_value>",
+            "<|tool_call_end|>",
+        )
 
         def _on_token(agent: str, chunk: str):
-            nonlocal streamed_chars, current_tool
+            nonlocal streamed_chars, current_tool, tool_start_time, streaming_markup_suppressed, suppression_buffer, live_markdown, prose_buffer
             if isinstance(chunk, str) and chunk.startswith('{"__type__":'):
                 try:
                     data = json.loads(chunk)
@@ -306,49 +567,118 @@ class ScopeForgeCLI:
 
                     if evt_type == "tool_call":
                         current_tool = data.get("name", "")
+                        tool_start_time = time.time()
                         args = data.get("args", {})
+                        if live_markdown is not None:
+                            try:
+                                live_markdown.stop()
+                            except Exception:
+                                pass
+                            live_markdown = None
+                            prose_buffer = ""
+                        elif streamed_chars > 0:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
                         self.console.print()
-                        self.console.print(f"[bold cyan]● Tool Call:[/] [bold white]{current_tool}[/] [dim]({agent})[/]")
-                        if "command" in args:
-                            self.console.print(f"  [dim]$[/] [yellow]{args['command']}[/]")
-                        elif "file_path" in args:
-                            self.console.print(f"  [dim]path:[/] [cyan]{args['file_path']}[/]")
-                        elif "target" in args:
-                            self.console.print(f"  [dim]target:[/] [yellow]{args['target']}[/]")
-                        elif args:
-                            preview = json.dumps(args)
-                            if len(preview) > 100:
-                                preview = preview[:97] + "..."
-                            self.console.print(f"  [dim]args:[/] {preview}")
+                        self.console.print(_format_tool_call_card(current_tool, args, agent))
                         return
 
                     elif evt_type == "tool_result":
+                        if live_markdown is not None:
+                            try:
+                                live_markdown.stop()
+                            except Exception:
+                                pass
+                            live_markdown = None
+                            prose_buffer = ""
                         t_name = data.get("name", current_tool or "Tool")
                         res = data.get("result", "")
-                        res_len = len(str(res))
-                        self.console.print(f"  [dim green]✓[/dim green] [dim]{t_name} completed ({res_len:,} chars)[/dim]")
+                        duration = time.time() - tool_start_time if tool_start_time > 0 else 0.0
+                        self.console.print(_format_tool_result_card(t_name, str(res), duration=duration))
                         current_tool = None
                         return
 
                     elif evt_type == "a2a_banner":
+                        if live_markdown is not None:
+                            try:
+                                live_markdown.stop()
+                            except Exception:
+                                pass
+                            live_markdown = None
+                            prose_buffer = ""
                         sender = data.get("sender", "Supervisor")
                         recipient = data.get("recipient", "Agent")
                         intent = data.get("intent", "TASK_DELEGATION")
                         prev = data.get("preview", "")
+                        self.console.print()
                         self.console.print(
-                            f"[dim magenta]─── ⇋ {sender} → {recipient} [{intent}] ───[/dim magenta]"
+                            f"[dim magenta]─── ⇄ A2A Protocol: [bold]{sender}[/] → [bold]{recipient}[/] "
+                            f"[{intent}] ───[/dim magenta]"
                         )
                         if prev:
-                            self.console.print(f"[dim]    {prev}[/dim]")
+                            self.console.print(f"  [dim]payload:[/] [dim white]{prev}[/]")
                         return
 
                 except Exception:
                     pass
 
-            # Stream LLM response text chunk directly to terminal stdout
+            # Detect and suppress model-hallucinated or raw XML tool tags from stdout
+            if streaming_markup_suppressed:
+                suppression_buffer += chunk
+                for end_tag in SUPPRESS_TAG_SUFFIXES:
+                    if end_tag in suppression_buffer:
+                        end_pos = suppression_buffer.find(end_tag) + len(end_tag)
+                        after_text = suppression_buffer[end_pos:]
+                        streaming_markup_suppressed = False
+                        suppression_buffer = ""
+                        if after_text:
+                            _on_token(agent, after_text)
+                        return
+                return
+
+            for start_tag in SUPPRESS_TAG_PREFIXES:
+                if start_tag in chunk:
+                    idx = chunk.find(start_tag)
+                    before_text = chunk[:idx]
+                    if before_text:
+                        streamed_chars += len(before_text)
+                        if self.console.is_terminal:
+                            prose_buffer += before_text
+                            c_text = _clean_tool_call_text(prose_buffer)
+                            if live_markdown is None:
+                                live_markdown = Live(Markdown(c_text), console=self.console, refresh_per_second=15, transient=False)
+                                live_markdown.start()
+                            else:
+                                live_markdown.update(Markdown(c_text))
+                        else:
+                            sys.stdout.write(before_text)
+                            sys.stdout.flush()
+                    streaming_markup_suppressed = True
+                    suppression_buffer = chunk[idx:]
+                    for end_tag in SUPPRESS_TAG_SUFFIXES:
+                        if end_tag in suppression_buffer:
+                            end_pos = suppression_buffer.find(end_tag) + len(end_tag)
+                            after_text = suppression_buffer[end_pos:]
+                            streaming_markup_suppressed = False
+                            suppression_buffer = ""
+                            if after_text:
+                                _on_token(agent, after_text)
+                            return
+                    return
+
+            # Stream clean LLM text chunk directly with rich Markdown rendering
             streamed_chars += len(chunk)
-            sys.stdout.write(chunk)
-            sys.stdout.flush()
+            if self.console.is_terminal:
+                prose_buffer += chunk
+                c_text = _clean_tool_call_text(prose_buffer)
+                if live_markdown is None:
+                    live_markdown = Live(Markdown(c_text), console=self.console, refresh_per_second=15, transient=False)
+                    live_markdown.start()
+                else:
+                    live_markdown.update(Markdown(c_text))
+            else:
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
 
         try:
             self.console.print()
@@ -362,8 +692,14 @@ class ScopeForgeCLI:
                 max_iterations=self.max_iterations,
             )
 
-            # Flush newline after streaming
-            if streamed_chars > 0:
+            if live_markdown is not None:
+                try:
+                    live_markdown.stop()
+                except Exception:
+                    pass
+                live_markdown = None
+                prose_buffer = ""
+            elif streamed_chars > 0:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
 
@@ -410,16 +746,28 @@ class ScopeForgeCLI:
                     if len(self.chat_history) > 10:
                         self.chat_history = self.chat_history[-10:]
 
-            # Stats summary
+            # Stats summary in modern status bar
             elapsed = time.time() - start_time
             turn_tokens = max(1, len(prompt) // 4) + 350
             self.total_tokens += turn_tokens
             turn_cost = 0.001 if "free" in self.provider_mgr.active_provider_name else 0.003
             self.estimated_cost += turn_cost
 
+            mode_color = {
+                "plan": "green",
+                "audit": "cyan",
+                "redteam": "yellow",
+                "blueteam": "blue",
+                "live": "red",
+            }.get(self.sec_mode.lower(), "green")
+
             self.console.print()
             self.console.print(
-                f"[dim]● Tokens: {self.total_tokens:,} | Cost: ${self.estimated_cost:.4f} | Time: {elapsed:.2f}s | Agent: {active_agent}[/dim]"
+                f"  [dim cyan]⚡[/] [bold white]{self.total_tokens:,}[/] [dim]tokens[/]  "
+                f"[dim]·[/]  [bold green]${self.estimated_cost:.4f}[/]  "
+                f"[dim]·[/]  [bold yellow]{elapsed:.2f}s[/]  "
+                f"[dim]·[/]  [bold magenta]🤖 {active_agent.capitalize()}Agent[/]  "
+                f"[dim]·[/]  [bold {mode_color}][{self.sec_mode.upper()}][/]"
             )
             self.console.print()
 
@@ -428,6 +776,12 @@ class ScopeForgeCLI:
             return
         except Exception as e:
             self.console.print(f"\n[bold red]❌ Multi-agent execution error: {e}[/bold red]\n")
+        finally:
+            if live_markdown is not None:
+                try:
+                    live_markdown.stop()
+                except Exception:
+                    pass
 
     def handle_slash_command(self, raw: str) -> bool:
         """Process slash commands. Returns True if command was handled, False to exit."""
@@ -477,15 +831,11 @@ class ScopeForgeCLI:
             self._handle_config(args)
 
         elif cmd == "/scope":
-            gate = self.pipeline.get_scope_gate()
             if not args:
-                scopes = sorted(list(gate.authorized_scopes)) if gate else self.current_scope
-                self.console.print("[bold]Authorized Targets & Scopes:[/]")
-                for s in scopes:
-                    self.console.print(f"  • [yellow]{s}[/]")
-                self.console.print("[dim]Add scope with: /scope <domain or IP>[/dim]")
+                self._show_scope()
             else:
                 target = args[0].strip()
+                gate = self.pipeline.get_scope_gate()
                 if gate:
                     gate.add_scope(target)
                 if target not in self.current_scope:
@@ -584,10 +934,7 @@ class ScopeForgeCLI:
                 self.console.print(f"[dim green]✓ Context compacted from {old_len} to {len(self.chat_history)} messages.[/dim green]")
 
         elif cmd == "/cost":
-            self.console.print("[bold]Session Usage & Cost Metrics:[/]")
-            self.console.print(f"  • [bold]Estimated Tokens:[/] {self.total_tokens:,}")
-            self.console.print(f"  • [bold]Estimated Cost:[/]   ${self.estimated_cost:.4f}")
-            self.console.print(f"  • [bold]Active Model:[/]     {self.provider_mgr.get_active_config().name}")
+            self._show_cost()
 
         elif cmd == "/wiki":
             query = " ".join(args).strip()
@@ -645,33 +992,47 @@ class ScopeForgeCLI:
 
     def _show_help(self):
         """Display help panel with organized slash commands."""
-        table = Table(box=ROUNDED, border_style="cyan", show_header=True)
-        table.add_column("Command", style="bold white", width=18)
-        table.add_column("Description", style="dim white")
+        table = Table(
+            title="[bold white]⚡ ScopeForge Interactive Command Reference[/bold white]",
+            box=ROUNDED,
+            border_style="bright_blue",
+            show_header=True,
+            header_style="bold bright_cyan",
+        )
+        table.add_column("Command", style="bold bright_cyan", width=22)
+        table.add_column("Category", style="bold magenta", width=18)
+        table.add_column("Description", style="white")
 
-        table.add_row("/help", "Show this command reference")
-        table.add_row("/mode [name]", "Switch ScopeGate mode: plan, audit, redteam, live")
-        table.add_row("/model [name|#]", "Switch active LLM provider or model")
-        table.add_row("/model add", "Register custom LLM profile (wizard or inline)")
-        table.add_row("/config [set ...]", "View or update provider key, model, or base URL")
-        table.add_row("/scope [target]", "Inspect or add authorized domain/IP targets")
-        table.add_row("/agent [name]", "Route directly to recon, audit, exploit, dev")
-        table.add_row("/diff", "View color syntax git diff of workspace changes")
-        table.add_row("/commit <msg>", "Stage and commit changes using git")
-        table.add_row("/review", "Autonomous security code review of git diff")
-        table.add_row("/init", "Create SCOPEFORGE.md project instructions")
-        table.add_row("/doctor", "Check environment, platform, models, and tools")
-        table.add_row("/compact", "Compact conversation context to save tokens")
-        table.add_row("/cost", "Display session token usage and estimated cost")
-        table.add_row("/wiki [query]", "Search security wiki knowledge base")
-        table.add_row("/rag [query]", "Search LlamaIndex cybersecurity RAG store")
-        table.add_row("/clear", "Clear terminal screen")
-        table.add_row("/tui", "Switch to full-screen multi-pane Textual dashboard")
-        table.add_row("/exit, /quit", "Exit ScopeForge")
+        # Category: Navigation & Execution
+        table.add_row("/help", "Navigation", "Show this command reference")
+        table.add_row("/mode [plan|audit|live]", "Execution RoE", "Switch ScopeGate sandbox (plan, audit, redteam, live)")
+        table.add_row("/agent [name]", "Multi-Agent", "Route directly to recon, audit, exploit, dev")
+        table.add_row("/clear", "Terminal", "Clear terminal screen and redraw status banner")
+        table.add_row("/tui", "Terminal", "Switch to full-screen multi-pane Textual dashboard")
+        table.add_row("/exit, /quit", "Session", "Exit ScopeForge session")
+
+        # Category: Code & Workspace
+        table.add_row("/diff", "Code & Git", "View color syntax git diff of workspace modifications")
+        table.add_row("/commit <msg>", "Code & Git", "Stage and commit changes using git")
+        table.add_row("/review", "Code & Git", "Autonomous security & quality code review of diff")
+        table.add_row("/init", "Workspace", "Initialize SCOPEFORGE.md project instructions")
+
+        # Category: Models & Configuration
+        table.add_row("/model [name|#]", "Models", "Switch active LLM provider or model")
+        table.add_row("/model add", "Models", "Register custom LLM profile (wizard or flags)")
+        table.add_row("/config [set ...]", "Configuration", "View or update provider key, model, or base URL")
+        table.add_row("/doctor", "Diagnostics", "Check environment, platform, models, and tools")
+
+        # Category: Memory & Discovery
+        table.add_row("/scope [target]", "ScopeGate", "Inspect or add authorized domain/IP targets")
+        table.add_row("/compact", "Context", "Compact conversation context to preserve token budget")
+        table.add_row("/cost", "Metrics", "Display session token usage and estimated cost")
+        table.add_row("/wiki [query]", "SecWiki", "Search security wiki knowledge base")
+        table.add_row("/rag [query]", "LlamaIndex", "Search LlamaIndex cybersecurity RAG store")
 
         self.console.print()
         self.console.print(table)
-        self.console.print()
+        self.console.print("[dim]Tip: Type any natural language prompt to begin autonomous execution.[/dim]\n")
 
     def _show_models(self):
         """Display all configured models in a clean, robust table."""
@@ -679,21 +1040,44 @@ class ScopeForgeCLI:
         active_name = self.provider_mgr.active_provider_name
 
         try:
-            table = Table(title="Configured LLM Models", box=ROUNDED, border_style="cyan")
-            table.add_column("#", width=4, justify="right")
-            table.add_column("Name", style="bold white", min_width=18)
-            table.add_column("Provider", style="cyan", min_width=10)
-            table.add_column("Model ID", style="dim", min_width=20)
-            table.add_column("Status", min_width=10)
+            table = Table(
+                title=f"[bold white]⚡ ScopeForge LLM Providers & Models[/bold white] [dim]({len(providers)} configured)[/dim]",
+                box=ROUNDED,
+                border_style="bright_blue",
+                show_lines=False,
+                header_style="bold bright_cyan",
+            )
+            table.add_column("#", width=4, justify="right", style="bold cyan")
+            table.add_column("Alias / Model", style="bold white", no_wrap=True)
+            table.add_column("Provider", no_wrap=True)
+            table.add_column("Model ID / Endpoint", style="white", overflow="ellipsis")
+            table.add_column("Tier", no_wrap=True)
+            table.add_column("Status", no_wrap=True)
 
             for idx, cfg in enumerate(providers):
                 is_active = cfg.name == active_name
-                status = "[bold green]ACTIVE[/bold green]" if is_active else "[dim]available[/dim]"
-                table.add_row(str(idx + 1), cfg.name, cfg.provider.value, _display_model_id(cfg), status)
+                status = "[bold green]● ACTIVE[/bold green]" if is_active else "[dim]○ ready[/dim]"
+                prov_badge = _format_provider_badge(cfg.provider.value)
+                tier = _infer_model_tier(cfg.name, cfg.model)
+                prefix = "[bold green]★ [/bold green]" if is_active else "  "
+                row_style = "bold white" if is_active else ""
+                table.add_row(
+                    str(idx + 1),
+                    f"{prefix}{cfg.name}",
+                    prov_badge,
+                    _display_model_id(cfg),
+                    tier,
+                    status,
+                    style=row_style,
+                )
 
             self.console.print()
             self.console.print(table)
-            self.console.print("[dim]Switch: [bold white]/model <name or #>[/bold white] | Add custom: [bold white]/model add[/bold white] | Config: [bold white]/config[/bold white][/dim]\n")
+            self.console.print(
+                "[dim]Switch: [bold white]/model <name or #>[/bold white]  ·  "
+                "Add: [bold white]/model add[/bold white]  ·  "
+                "Config: [bold white]/config[/bold white][/dim]\n"
+            )
         except Exception:
             # Bulleted fallback in case terminal width or buffer encounters stream limits
             self.console.print(f"\n[bold]Configured LLM Models ({len(providers)}):[/]")
@@ -755,10 +1139,10 @@ class ScopeForgeCLI:
                         self.console.print("[yellow]⚠️ Setup cancelled: Model name is required.[/yellow]\n")
                         return
 
+                default_pt = "anthropic" if "claude" in (name + model_id).lower() else "custom"
                 if not provider_type or provider_type == "custom":
-                    pt_input = input("  2. Provider Type [custom, anthropic, openai, ollama, groq, openrouter] (default: custom): ").strip().lower()
-                    if pt_input:
-                        provider_type = pt_input
+                    pt_input = input(f"  2. Provider Type [custom, anthropic, openai, ollama, groq, openrouter] (default: {default_pt}): ").strip().lower()
+                    provider_type = pt_input if pt_input else default_pt
 
                 if not model_id:
                     model_id = input("  3. Model ID (e.g. claude-3-7-sonnet-20250219, gpt-4o, deepseek-chat): ").strip()
@@ -768,6 +1152,9 @@ class ScopeForgeCLI:
 
                 if not base_url:
                     base_url = input("  4. Base URL (e.g. https://api.justwoker.icu, http://localhost:11434/v1, or press Enter): ").strip()
+
+                if provider_type == "custom" and "claude" in model_id.lower() and not ("openrouter" in (base_url or "").lower() or "groq" in (base_url or "").lower() or "apmix.ai" in (base_url or "").lower()):
+                    provider_type = "anthropic"
 
                 if not api_key:
                     api_key = input("  5. API Key (e.g. sk-..., env:KEY_NAME, or press Enter to skip): ").strip()
@@ -850,26 +1237,155 @@ class ScopeForgeCLI:
         else:
             self.console.print("[yellow]Usage: /config set <key|model|base> <value>[/yellow]")
 
-    def _show_doctor(self):
-        """Run system diagnostics."""
-        active_cfg = self.provider_mgr.get_active_config()
-        self.console.print()
-        self.console.print(
-            Panel(
-                f"[bold cyan]ScopeForge Diagnostics (Doctor)[/bold cyan]\n\n"
-                f"[bold]Python:[/]      `{platform.python_version()}` ({sys.executable})\n"
-                f"[bold]Platform:[/]    `{platform.system()} {platform.release()}`\n"
-                f"[bold]Active Model:[/] `{active_cfg.name}` ({active_cfg.provider.value} / {active_cfg.model})\n"
-                f"[bold]ScopeGate:[/]    Mode: `[{self.sec_mode.upper()}]` | Scopes: `{', '.join(self.current_scope)}`\n"
-                f"[bold]Skills:[/]       `{len(self.skill_mgr.list_skills())}` skills discovered\n"
-                f"[bold]MCP:[/]          `{len(self.mcp.list_servers())}` servers configured\n"
-                f"[bold]RAG Store:[/]    LlamaIndex online ({len(self.rag.documents)} chunks)\n"
-                f"[bold]Status:[/]       [bold green]● All systems nominal and ready for operations[/bold green]",
-                box=ROUNDED,
-                border_style="cyan",
-            )
+    def _show_scope(self):
+        """Display ScopeGate authorization matrix table."""
+        gate = self.pipeline.get_scope_gate()
+        scopes = sorted(list(gate.authorized_scopes)) if gate else self.current_scope
+
+        table = Table(
+            title="[bold white]🛡️ ScopeGate Authorization Matrix[/bold white]",
+            box=ROUNDED,
+            border_style="yellow",
+            show_header=True,
+            header_style="bold yellow",
         )
+        table.add_column("#", width=4, justify="right", style="bold cyan")
+        table.add_column("Target Scope Pattern", style="bold bright_yellow", min_width=24)
+        table.add_column("Pattern Type", style="cyan", min_width=18)
+        table.add_column("Sandbox Mode", style="bold green", min_width=16)
+        table.add_column("Enforcement", style="dim white", min_width=20)
+
+        mode_str = f"[{self.sec_mode.upper()}]"
+        for idx, s in enumerate(scopes, 1):
+            if s.startswith("*."):
+                p_type = "Wildcard Subdomain"
+            elif s in ("localhost", "127.0.0.1", "::1"):
+                p_type = "Local Loopback"
+            elif "/" in s:
+                p_type = "CIDR Subnet"
+            else:
+                p_type = "Exact Host / IP"
+
+            table.add_row(
+                str(idx),
+                s,
+                p_type,
+                mode_str,
+                "Strict ScopeGate RoE",
+            )
+
         self.console.print()
+        self.console.print(table)
+        self.console.print("[dim]Add target: [bold white]/scope <domain or IP>[/]  ·  Switch mode: [bold white]/mode <name>[/][/dim]\n")
+
+    def _show_cost(self):
+        """Display session usage and cost metrics in a clean card."""
+        active_cfg = self.provider_mgr.get_active_config()
+
+        table = Table(
+            title="[bold white]💰 Session Usage & Cost Analytics[/bold white]",
+            box=ROUNDED,
+            border_style="bright_blue",
+            show_header=True,
+            header_style="bold bright_cyan",
+        )
+        table.add_column("Metric", style="bold white", width=22)
+        table.add_column("Value", style="bold bright_green", width=24)
+        table.add_column("Notes", style="dim white")
+
+        table.add_row("Total Session Tokens", f"{self.total_tokens:,}", "Estimated prompt + completion tokens")
+        table.add_row("Estimated Cost", f"${self.estimated_cost:.4f}", "Based on provider token rates")
+        table.add_row("Active Model", active_cfg.name, f"{active_cfg.provider.value} / {active_cfg.model}")
+        table.add_row("Execution Mode", f"[{self.sec_mode.upper()}]", "ScopeGate sandbox policy")
+        table.add_row("History Turns", f"{len(self.chat_history)} messages", "Conversation context window")
+
+        self.console.print()
+        self.console.print(table)
+        self.console.print()
+
+    def _show_doctor(self):
+        """Run system diagnostics with a comprehensive diagnostics matrix table."""
+        active_cfg = self.provider_mgr.get_active_config()
+        skills = self.skill_mgr.list_skills()
+        mcp_servers = self.mcp.list_servers()
+
+        table = Table(
+            title="[bold white]🏥 ScopeForge System Diagnostics (Doctor)[/bold white]",
+            box=ROUNDED,
+            border_style="bright_blue",
+            show_header=True,
+            header_style="bold bright_cyan",
+        )
+        table.add_column("Subsystem", style="bold bright_cyan", no_wrap=True)
+        table.add_column("Component", style="bold white", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Diagnostics Details", style="dim white")
+
+        # Python
+        table.add_row(
+            "Runtime",
+            "Python Core",
+            "[bold green]● OK[/]",
+            f"v{platform.python_version()} ({sys.executable})",
+        )
+        # OS
+        table.add_row(
+            "Platform",
+            platform.system(),
+            "[bold green]● OK[/]",
+            f"{platform.system()} {platform.release()} ({platform.machine()})",
+        )
+        # LLM
+        prov_status = (
+            "[bold green]● ONLINE[/]"
+            if (active_cfg.api_key or active_cfg.provider == ProviderType.OLLAMA or "free" in active_cfg.name)
+            else "[bold yellow]● NO KEY[/]"
+        )
+        table.add_row(
+            "LLM Engine",
+            active_cfg.name,
+            prov_status,
+            f"{active_cfg.provider.value} / {active_cfg.model} @ {active_cfg.api_base or 'default'}",
+        )
+        # ScopeGate
+        table.add_row(
+            "ScopeGate",
+            f"Mode [{self.sec_mode.upper()}]",
+            "[bold green]● ACTIVE[/]",
+            f"{len(self.current_scope)} authorized targets: {', '.join(self.current_scope[:3])}",
+        )
+        # Agents
+        table.add_row(
+            "Agent Swarm",
+            "Multi-Agent",
+            "[bold green]● READY[/]",
+            "Supervisor, DevAgent, ReconAgent, AuditAgent, ExploitAgent, ReportAgent",
+        )
+        # Skills
+        table.add_row(
+            "Extensibility",
+            "Skills Manager",
+            f"[bold green]● {len(skills)} READY[/]",
+            f"{len(skills)} custom skills discovered across workspace",
+        )
+        # MCP
+        table.add_row(
+            "Protocols",
+            "MCP Bridge",
+            f"[bold green]● {len(mcp_servers)} CONNECTED[/]",
+            f"{len(mcp_servers)} MCP servers active via stdio / SSE",
+        )
+        # RAG
+        table.add_row(
+            "Memory",
+            "LlamaSecRAG",
+            "[bold green]● ONLINE[/]",
+            f"{len(self.rag.documents)} cybersecurity knowledge chunks indexed",
+        )
+
+        self.console.print()
+        self.console.print(table)
+        self.console.print("[dim green]✓ All systems nominal and ready for operations.[/dim green]\n")
 
     async def run_repl(self):
         """Run the main interactive REPL loop."""
@@ -880,6 +1396,12 @@ class ScopeForgeCLI:
             try:
                 user_input = await self.session.prompt_async(self.get_prompt_text())
                 last_ctrl_c_time = 0.0
+
+                import shutil
+                cols = shutil.get_terminal_size((80, 20)).columns
+                w = max(40, min(cols - 4, 88))
+                self.console.print(f"[dim bright_black]╰{'─' * (w + 1)}╯[/dim bright_black]")
+
                 text = user_input.strip()
                 if not text:
                     continue

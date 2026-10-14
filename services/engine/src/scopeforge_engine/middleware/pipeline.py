@@ -41,10 +41,12 @@ class MiddlewarePipeline:
         return None
 
     def set_mode(self, mode: str):
-        """Set the execution mode on the ScopeGate middleware."""
-        gate = self.get_scope_gate()
-        if gate:
-            gate.set_mode(mode)
+        """Set the execution mode across all relevant middleware."""
+        for m in self.middlewares:
+            if hasattr(m, "set_mode"):
+                m.set_mode(mode)
+            elif hasattr(m, "mode"):
+                m.mode = mode.lower()
 
     def run_before_llm(self, messages: List[Any], metadata: Dict[str, Any]) -> List[Any]:
         current = messages
@@ -107,6 +109,6 @@ def create_default_pipeline(
     return MiddlewarePipeline([
         RedactionMiddleware(),
         ScopeGateMiddleware(authorized_scopes=authorized_scopes, mode=mode),
-        ApprovalGateMiddleware(),
+        ApprovalGateMiddleware(mode=mode),
         AuditLoggingMiddleware(),
     ])

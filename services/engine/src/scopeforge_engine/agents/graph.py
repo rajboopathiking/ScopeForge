@@ -134,9 +134,13 @@ def _normalize_tool_call(name: str, args: Dict[str, Any], tool_map: Optional[Dic
         "a2a": "send_a2a_message",
         "list_mcp": "list_mcp_servers", "mcp_list": "list_mcp_servers", "mcp_servers": "list_mcp_servers",
         "get_mcp_servers": "list_mcp_servers", "show_mcp_servers": "list_mcp_servers", "get_mcp": "list_mcp_servers",
+        "list_mcp_tools": "list_mcp_servers", "mcp_status": "list_mcp_servers", "show_mcp": "list_mcp_servers",
+        "check_mcp": "list_mcp_servers", "mcp": "list_mcp_servers",
         "add_mcp": "add_mcp_server", "mcp_add": "add_mcp_server", "install_mcp": "add_mcp_server",
         "mcp_install": "add_mcp_server", "add_mcp_tool": "add_mcp_server", "setup_mcp": "add_mcp_server",
+        "enable_mcp": "add_mcp_server", "configure_mcp": "add_mcp_server",
         "skills": "list_skills", "get_skills": "list_skills", "show_skills": "list_skills",
+        "skills_list": "list_skills", "list_all_skills": "list_skills", "get_all_skills": "list_skills",
         "add_skill": "install_skill", "skill_install": "install_skill", "install_skills": "install_skill",
     }
     clean_name = aliases.get(name.lower().strip(), name.strip())
@@ -250,9 +254,24 @@ def _normalize_tool_call(name: str, args: Dict[str, Any], tool_map: Optional[Dic
             norm_args["command"] = norm_args.pop(k)
             break
 
-    for k in ("url", "repo", "git_url", "git_repo"):
+    for k in ("url", "repo", "git_url", "git_repo", "repository", "target"):
         if k in norm_args and "repo_url" not in norm_args and clean_name == "install_skill":
             norm_args["repo_url"] = norm_args.pop(k)
+            break
+
+    for k in ("skill_name", "title"):
+        if k in norm_args and "name" not in norm_args and clean_name == "create_skill":
+            norm_args["name"] = norm_args.pop(k)
+            break
+
+    for k in ("trigger", "trigger_words", "keywords"):
+        if k in norm_args and "triggers" not in norm_args and clean_name == "create_skill":
+            norm_args["triggers"] = norm_args.pop(k)
+            break
+
+    for k in ("instruction", "prompt", "skill_instructions", "content", "body"):
+        if k in norm_args and "instructions" not in norm_args and clean_name == "create_skill":
+            norm_args["instructions"] = norm_args.pop(k)
             break
 
     return clean_name, norm_args
@@ -328,7 +347,38 @@ def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> 
     if extracted:
         return extracted
 
-    # 3. XML style tags: <dots_function_call>, <tool_call>, <function_call>, <invoke>
+    # 3. XML style tags: <dots_function_call>, <tool_call>, <function_call>, <invoke>, <arg_key>
+    # 3-pre. Arg-key / arg-value pattern (e.g. Invoking tool: bash_cli<arg_key>command</arg_key><arg_value>... or <tool_call>bash_cli<arg_key>...)
+    arg_kv_blocks = re.findall(
+        r"(?:Invoking\s+tool:\s*|<(?:tool_call|function_call)>\s*)?([a-zA-Z_]\w*)\s*((?:<arg_key>.*?</arg_value>\s*)+)(?:\s*</(?:tool_call|function_call)>)?",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    for fn_name, kv_blob in arg_kv_blocks:
+        fn_name = fn_name.strip()
+        norm_fn, _ = _normalize_tool_call(fn_name, {}, tool_map)
+        if (tool_map and (norm_fn in tool_map or fn_name in tool_map)) or (not tool_map and re.match(r"^[a-zA-Z_]\w*$", fn_name)):
+            pairs = re.findall(r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>", kv_blob, re.DOTALL)
+            parsed_args = {}
+            for k, v in pairs:
+                k = k.strip()
+                v = v.strip()
+                if (v.startswith("{") and v.endswith("}")) or (v.startswith("[") and v.endswith("]")):
+                    try:
+                        parsed_args[k] = json.loads(v)
+                    except Exception:
+                        parsed_args[k] = v
+                else:
+                    parsed_args[k] = v
+            norm_name, norm_args = _normalize_tool_call(norm_fn or fn_name, parsed_args, tool_map)
+            extracted.append({
+                "name": norm_name,
+                "args": norm_args,
+                "id": f"call_{uuid.uuid4().hex[:8]}"
+            })
+    if extracted:
+        return extracted
+
     # 3a. <dots_function_call> blocks
     dots_matches = re.findall(r"<dots_function_call>(.*?)</dots_function_call>", content, re.DOTALL)
     for dm in dots_matches:
@@ -369,9 +419,48 @@ def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> 
     tag_matches = re.findall(r"<(?:tool_call|function_call)>(.*?)</(?:tool_call|function_call)>", content, re.DOTALL)
     for tm in tag_matches:
         tm_clean = tm.strip()
+
+        # Check for <function=tool_name>...<parameter=key>val</parameter>...</function>
+        fn_m = re.search(r"<function(?:=|\s+name=)[\"']?(\w+)[\"']?>(.*?)</function>", tm_clean, re.DOTALL)
+        if fn_m:
+            fn_name = fn_m.group(1).strip()
+            body = fn_m.group(2).strip()
+            params = {}
+            for p_name, val in re.findall(r"<parameter(?:=|\s+name=)[\"']?(\w+)[\"']?>(.*?)</parameter>", body, re.DOTALL):
+                params[p_name] = val.strip()
+            if not params:
+                for k, v in re.findall(r'(\w+)\s*=\s*[\"\']([^\"\']*)[\"\']', body):
+                    params[k] = v
+            norm_name, norm_args = _normalize_tool_call(fn_name, params, tool_map)
+            extracted.append({
+                "name": norm_name,
+                "args": norm_args,
+                "id": f"call_{uuid.uuid4().hex[:8]}"
+            })
+            continue
+
+        # Strip markdown fences if present inside <tool_call>
+        unfenced = re.sub(r"^```(?:json)?\s*", "", tm_clean).rstrip("` \n\r\t")
+        if unfenced != tm_clean:
+            try:
+                data = json.loads(unfenced)
+                if isinstance(data, dict):
+                    t_name = data.get("name") or data.get("tool") or data.get("action")
+                    t_args = data.get("arguments") or data.get("args") or data.get("parameters") or {}
+                    if t_name:
+                        norm_name, norm_args = _normalize_tool_call(t_name, t_args if isinstance(t_args, dict) else {"input": str(t_args)}, tool_map)
+                        extracted.append({
+                            "name": norm_name,
+                            "args": norm_args,
+                            "id": f"call_{uuid.uuid4().hex[:8]}"
+                        })
+                        continue
+            except Exception:
+                pass
+
         bare_name = re.sub(r"\(.*?\)$", "", tm_clean).strip()
         norm_bare, _ = _normalize_tool_call(bare_name, {}, tool_map)
-        if (tool_map and norm_bare in tool_map) or bare_name in (tool_map or {}):
+        if (tool_map and (norm_bare in tool_map or bare_name in tool_map)) or (not tool_map and re.match(r"^[a-zA-Z_]\w*$", norm_bare or bare_name)):
             arg_m = re.search(r"^\w+\s*\((.*?)\)$", tm_clean, re.DOTALL)
             args = {}
             if arg_m and arg_m.group(1).strip():
@@ -427,7 +516,24 @@ def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> 
         except Exception:
             pass
 
-    # 3c. Standalone <invoke name="..."> tags
+    if extracted:
+        return extracted
+
+    # 3c. Standalone <function=tool_name>...<parameter=key>val</parameter>...</function>
+    func_matches = re.findall(r"<function(?:=|\s+name=)[\"']?(\w+)[\"']?>(.*?)</function>", content, re.DOTALL)
+    for fn, body in func_matches:
+        params = dict(re.findall(r"<parameter(?:=|\s+name=)[\"']?(\w+)[\"']?>(.*?)</parameter>", body, re.DOTALL))
+        if not params:
+            for k, v in re.findall(r'(\w+)\s*=\s*[\"\']([^\"\']*)[\"\']', body):
+                params[k] = v
+        norm_name, norm_args = _normalize_tool_call(fn, params, tool_map)
+        extracted.append({
+            "name": norm_name,
+            "args": norm_args,
+            "id": f"call_{uuid.uuid4().hex[:8]}"
+        })
+
+    # 3d. Standalone <invoke name="..."> tags
     inv_matches = re.findall(r"<invoke\s+(?:name|tool|function)=[\"\'](\w+)[\"\']>(.*?)</invoke>", content, re.DOTALL)
     for fn, body in inv_matches:
         params = dict(re.findall(r"<parameter\s+name=[\"\'](\w+)[\"\']>(.*?)</parameter>", body, re.DOTALL))
@@ -566,12 +672,16 @@ def _extract_tool_calls(msg: Any, tool_map: Optional[Dict[str, Any]] = None) -> 
 def _clean_tool_call_text(content: str) -> str:
     """Strip raw tool-calling markup tags so conversation text remains clean and human-readable."""
     cleaned = content
+    cleaned = re.sub(r"(?:Invoking\s+tool:\s*|<(?:tool_call|function_call)>\s*)?[a-zA-Z_]\w*\s*(?:<arg_key>.*?</arg_value>\s*)+(?:</(?:tool_call|function_call)>)?", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<arg_key>.*?</arg_value>", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"<\|tool_call_start\|>.*?<\|tool_call_end\|>", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"<dots_function_call>.*?</dots_function_call>", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"<(?:tool_call|function_call)>.*?</(?:tool_call|function_call)>", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"<function(?:=|\s+name=).*?</function>", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"<invoke\s+(?:name|tool|function)=[\"\']\w+[\"\']>.*?</invoke>", "", cleaned, flags=re.DOTALL)
     cleaned = re.sub(r"(?:Action|Tool):\s*\w+\s*\n(?:Action\s+Input|Tool\s+Input|Input|Args|Parameters|Arguments):\s*(?:[^\n]+|\{.*?\})", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r"```(?:json)?\s*\{\s*\"(?:tool|name|action)\".*?\}\s*```", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"^Invoking\s+tool:\s*\w+.*?(?=\n|$)", "", cleaned, flags=re.MULTILINE | re.IGNORECASE)
     return cleaned.strip()
 
 
@@ -590,15 +700,20 @@ _SUCCESS_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Broader: ANY operational goal that should normally be fulfilled by a real tool
-# round (not just file/screenshot ops). Used to catch models that narrate tool
-# usage in prose without ever emitting a tool call.
+# Broader: operational goals that MUST be fulfilled by a real tool round.
+# Intentionally narrow — only match unambiguously agentic/technical requests
+# that a prose reply cannot satisfy. Conversational messages ("hi", "thanks",
+# "explain X", "what is Y") must NOT match here.
 _OPERATIONAL_GOAL_RE = re.compile(
-    r"\b(scan|port\s*scan|nmap|recon|probe|enumerate|audit|sast|cve|exploit|poc|"
-    r"git\s+(status|diff|commit|clone|log)|clone|grep|glob|search\s+(the\s+)?(web|code|online)|"
-    r"web\s*search|google|browse|lookup|fetch|curl|wget|run|execute|bash|shell|terminal|command|"
-    r"install|list\s+files|find\s+file|view\s+file|read\s+file|edit\s+file|write\s+file|"
-    r"screenshot|capture|download|cp\s|mkdir|save|create\s+file|test|build|compile)\b",
+    r"\b(port\s*scan|nmap|recon|probe|enumerate|audit|sast|cve|exploit|poc|"
+    r"git\s+(status|diff|commit|clone|log)|clone\s+(repo|https?://)|"
+    r"grep\b|glob\s+|web\s*search|google\s+search|browse\s+(to|https?://)|"
+    r"curl\s+|wget\s+|bash\s+-c|shell\s+command|terminal\s+command|"
+    r"install\s+(package|skill|pip|npm|brew|apt)|list\s+files\s+(in|at|under)|"
+    r"find\s+files?\s+(in|at|under|named|matching)|"
+    r"screenshot|capture\s+(screenshot|screen|page)|download\s+(file|repo|url)|"
+    r"cp\s+\S|mkdir\s+\S|create\s+file\s+(at|in|named)|"
+    r"build\s+(project|app|docker|image)|compile\s+(code|project))\b",
     re.IGNORECASE,
 )
 
@@ -1141,6 +1256,7 @@ class MultiAgentSecOpsOrchestrator:
             iteration = 0
             forced_exec_retries = 0
             response = AIMessage(content="")
+            native_tools_supported = True
 
             while iteration < max_iterations:
                 current_msgs = _compact_context(current_msgs, max_messages=18)
@@ -1148,9 +1264,11 @@ class MultiAgentSecOpsOrchestrator:
                 accumulated_stream = ""
 
                 fallback_msgs = []
-                for m in current_msgs:
+                for idx_m, m in enumerate(current_msgs):
                     if isinstance(m, ToolMessage):
-                        fallback_msgs.append(HumanMessage(content=f"[Tool Observation for '{getattr(m, 'name', 'tool')}']:\n{m.content}"))
+                        is_last_tool = (idx_m == len(current_msgs) - 1) or all(not isinstance(later_m, ToolMessage) for later_m in current_msgs[idx_m + 1:])
+                        instr = "\n\n[Instruction: If more actions are needed to complete the user's objective, execute the next tool now. Otherwise, synthesize your final comprehensive response for the user.]" if is_last_tool else ""
+                        fallback_msgs.append(HumanMessage(content=f"[Tool Observation for '{getattr(m, 'name', 'tool')}']:\n{m.content}{instr}"))
                     elif isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
                         clean_c = m.content or f"Action: {m.tool_calls[0].get('name') if m.tool_calls else 'tool'}"
                         fallback_msgs.append(AIMessage(content=clean_c))
@@ -1160,27 +1278,31 @@ class MultiAgentSecOpsOrchestrator:
                 stream_err_occurred = False
                 last_stream_err = None
 
-                # Attempt 1: Stream using current model_to_call
-                try:
-                    async for chunk in model_to_call.astream(current_msgs):
-                        full_chunks.append(chunk)
-                        txt = _extract_chunk_text(getattr(chunk, "content", ""))
-                        if txt:
-                            accumulated_stream += txt
-                            if cb:
-                                if not any(tag in accumulated_stream.lower() for tag in (
-                                    "<tool_call>", "<dots_function_call>", "<function_call>",
-                                    "<invoke", "<|tool_call_start|>"
-                                )):
-                                    cb(agent_name.lower(), txt)
-                except Exception as stream_err:
-                    stream_err_occurred = True
-                    last_stream_err = stream_err
+                # Attempt 1: Stream using current model_to_call if native function calling is supported
+                if native_tools_supported:
+                    try:
+                        async for chunk in model_to_call.astream(current_msgs):
+                            full_chunks.append(chunk)
+                            txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                            if txt:
+                                accumulated_stream += txt
+                                if cb:
+                                    if not any(tag in accumulated_stream.lower() for tag in (
+                                        "<tool_call>", "<dots_function_call>", "<function_call>",
+                                        "<function=", "<function ", "<parameter=", "<parameter ",
+                                        "<invoke", "<|tool_call_start|>"
+                                    )):
+                                        cb(agent_name.lower(), txt)
+                    except Exception as stream_err:
+                        stream_err_occurred = True
+                        last_stream_err = stream_err
+                        native_tools_supported = False
 
-                # Attempt 2: If 0 chunks returned or stream raised an error (e.g. "No generation chunks were returned"
-                # due to proxy failing on native OpenAI tools payload), retry with unbound chat_model.
+                # Attempt 2: If native tools not supported or 0 chunks returned or stream raised an error
+                # (e.g. proxy failing on native OpenAI tools payload), retry with unbound chat_model.
                 # System prompt catalog + _extract_tool_calls preserves complete tool calling capabilities.
-                if stream_err_occurred or not full_chunks:
+                if not native_tools_supported or stream_err_occurred or not full_chunks:
+                    native_tools_supported = False
                     full_chunks = []
                     accumulated_stream = ""
                     model_to_call = chat_model
@@ -1195,6 +1317,7 @@ class MultiAgentSecOpsOrchestrator:
                                 if cb:
                                     if not any(tag in accumulated_stream.lower() for tag in (
                                         "<tool_call>", "<dots_function_call>", "<function_call>",
+                                        "<function=", "<function ", "<parameter=", "<parameter ",
                                         "<invoke", "<|tool_call_start|>"
                                     )):
                                         cb(agent_name.lower(), txt)
@@ -1231,9 +1354,58 @@ class MultiAgentSecOpsOrchestrator:
                                     )):
                                         cb(agent_name.lower(), txt)
                         except Exception:
-                            if last_stream_err:
-                                raise last_stream_err
-                            raise inv_err
+                            if not ("claude" in str(active_cfg.model).lower() and active_cfg.api_base):
+                                if last_stream_err:
+                                    raise last_stream_err
+                                raise inv_err
+
+                # Attempt 4: If model is a Claude model with a custom api_base,
+                # try the native Anthropic /v1/messages protocol via ChatAnthropic.
+                # Many gateways (OneAPI, NewAPI, Cloudflare AI Gateway) allow /v1/messages while
+                # blocking or misconfiguring /v1/chat/completions.
+                if not full_chunks and "claude" in str(active_cfg.model).lower() and active_cfg.api_base:
+                    try:
+                        from langchain_anthropic import ChatAnthropic
+                        alt_anthropic = ChatAnthropic(
+                            model=active_cfg.model,
+                            api_key=active_cfg.api_key or "sk-dummy",
+                            anthropic_api_url=active_cfg.api_base,
+                            temperature=active_cfg.temperature,
+                        )
+                        full_chunks = []
+                        accumulated_stream = ""
+                        try:
+                            async for chunk in alt_anthropic.astream(current_msgs):
+                                full_chunks.append(chunk)
+                                txt = _extract_chunk_text(getattr(chunk, "content", ""))
+                                if txt:
+                                    accumulated_stream += txt
+                                    if cb:
+                                        if not any(tag in accumulated_stream.lower() for tag in (
+                                            "<tool_call>", "<dots_function_call>", "<function_call>",
+                                            "<invoke", "<|tool_call_start|>"
+                                        )):
+                                            cb(agent_name.lower(), txt)
+                        except Exception:
+                            full_chunks = []
+
+                        if not full_chunks:
+                            try:
+                                alt_inv = await alt_anthropic.ainvoke(current_msgs)
+                                if alt_inv and (getattr(alt_inv, "content", None) or getattr(alt_inv, "tool_calls", None)):
+                                    full_chunks = [alt_inv]
+                                    txt = _extract_chunk_text(getattr(alt_inv, "content", ""))
+                                    if txt and cb:
+                                        cb(agent_name.lower(), txt)
+                            except Exception:
+                                pass
+
+                        if full_chunks:
+                            model_to_call = alt_anthropic
+                            chat_model = alt_anthropic
+                            last_stream_err = None
+                    except Exception:
+                        pass
 
                 if not full_chunks and last_stream_err:
                     raise last_stream_err
@@ -1252,24 +1424,8 @@ class MultiAgentSecOpsOrchestrator:
                 tool_calls = _extract_tool_calls(iter_resp, tool_map)
                 if not tool_calls:
                     content_str = str(extracted_content or "").strip()
-                    # Detect planning/reasoning responses that have no tool calls yet:
-                    # If this is early iterations and content looks like a plan, push the model to act.
-                    _is_planning_only = (
-                        iteration < 3
-                        and bool(tool_map)  # tools are available
-                        and any(marker in content_str for marker in (
-                            "I'll ", "I will ", "Step 1", "Step 2", "First,", "first,",
-                            "Next,", "next,", "Let me ", "I'll start", "I'll begin", "sequentially",
-                            "I need to ", "Let's start", "I'm going to ",
-                        ))
-                        and len(content_str) < 800  # short planning text, not a real final answer
-                    )
-                    # Hallucinated-execution guard: task needs real side effects
-                    # (screenshot, file write/cp, bash) but model produced ZERO tool
-                    # calls and instead faked success JSON (status:success, file_size,
-                    # PNG image data, ls output). Never accept that as final —
-                    # force real execution like Claude Code does (up to 4 retries).
-                    _tool_msgs_so_far = sum(1 for m in current_msgs if isinstance(m, ToolMessage))
+
+                    # ── Extract the user's original goal (used by all guards below) ────────
                     _user_goal = ""
                     try:
                         for _m in reversed(state.get("messages", []) or []):
@@ -1278,22 +1434,55 @@ class MultiAgentSecOpsOrchestrator:
                                 break
                     except Exception:
                         _user_goal = ""
+
+                    # ── Short-circuit: conversational / explain / Q&A goals ────────────────
+                    # Goals ≤ 8 words that are NOT unambiguously operational (e.g. port scan,
+                    # nmap, screenshot) pass straight through — no fabrication guards needed.
+                    _goal_is_op = _goal_is_operational(_user_goal)
+                    _goal_looks_conversational = (
+                        len((_user_goal or "").split()) <= 8
+                        and not _goal_is_op
+                    )
+
+                    # ── Detect planning/reasoning responses that have no tool calls yet ─────
+                    # Only fire when the goal is genuinely operational AND the reply looks
+                    # like a plan ("I'll start by…", "Step 1:", "Let me …"). Skip for
+                    # conversational messages — no tools are needed for "hi" or "explain X".
+                    _is_planning_only = (
+                        not _goal_looks_conversational
+                        and _goal_is_op
+                        and iteration < 3
+                        and bool(tool_map)
+                        and any(marker in content_str for marker in (
+                            "I'll ", "I will ", "Step 1", "Step 2", "First,", "first,",
+                            "Next,", "next,", "Let me ", "I'll start", "I'll begin", "sequentially",
+                            "I need to ", "Let's start", "I'm going to ",
+                        ))
+                        and len(content_str) < 800  # short planning text, not a real final answer
+                    )
+
+                    # ── Hallucinated-execution guard ──────────────────────────────────────
+                    # Task needs real side effects (screenshot, file write/cp, bash) but
+                    # model produced ZERO tool calls and instead faked success JSON
+                    # (status:success, file_size, PNG image data, ls output).
+                    _tool_msgs_so_far = sum(1 for m in current_msgs if isinstance(m, ToolMessage))
                     _task_needs_exec = _task_needs_execution(_user_goal)
                     _claims_success = _claims_file_success(content_str)
                     _is_hallucinated_exec = (
-                        _task_needs_exec and _tool_msgs_so_far == 0
+                        not _goal_looks_conversational
+                        and _task_needs_exec and _tool_msgs_so_far == 0
                         and (_claims_success or len(content_str) > 400)
                         and forced_exec_retries < 4 and iteration < max_iterations - 1
                     )
-                    # GENERAL fabricated-completion guard (beyond file/screenshot ops):
-                    # the goal is operational (scan/search/git/audit/run/...), NO tool has
-                    # run yet, and the model narrated an action as done. Force a real tool
-                    # round instead of accepting narrated prose as the final answer.
+                    # ── Fabricated-completion guard (general operational goals) ───────────
+                    # The goal is operational (port scan/nmap/recon/…), NO tool has run yet,
+                    # and the model narrated an action as done. Force a real tool round.
                     _is_fabricated_completion = (
-                        not _is_hallucinated_exec
+                        not _goal_looks_conversational
+                        and not _is_hallucinated_exec
                         and bool(tool_map)
                         and _tool_msgs_so_far == 0
-                        and _goal_is_operational(_user_goal)
+                        and _goal_is_op
                         and _claims_execution(content_str)
                         and forced_exec_retries < 4 and iteration < max_iterations - 1
                     )
@@ -1448,15 +1637,20 @@ class MultiAgentSecOpsOrchestrator:
             # a stubborn weak model can burn all forced retries and still return
             # text claiming files were saved/copied. Claude Code would report
             # failure, never a fabricated file listing — so replace it.
+            # NOTE: conversational/explain goals bypass this entirely.
             try:
                 _final_goal = ""
                 for _m in reversed(state.get("messages", []) or []):
                     if isinstance(_m, HumanMessage):
                         _final_goal = str(_m.content)
                         break
+                _final_conv = (
+                    len((_final_goal or "").split()) <= 8
+                    and not _goal_is_operational(_final_goal)
+                )
                 _final_obs = sum(1 for _m in current_msgs if isinstance(_m, ToolMessage))
                 _final_text = str(getattr(response, "content", "") or "")
-                if _task_needs_execution(_final_goal) and _final_obs == 0 and _claims_file_success(_final_text):
+                if not _final_conv and _task_needs_execution(_final_goal) and _final_obs == 0 and _claims_file_success(_final_text):
                     response = AIMessage(
                         content=(
                             "❌ **Could not complete: no tools were actually executed.**\n\n"
@@ -1472,7 +1666,8 @@ class MultiAgentSecOpsOrchestrator:
                         )
                     )
                 elif (
-                    _goal_is_operational(_final_goal)
+                    not _final_conv
+                    and _goal_is_operational(_final_goal)
                     and _final_obs == 0
                     and _claims_execution(_final_text)
                 ):
@@ -1566,62 +1761,158 @@ class MultiAgentSecOpsOrchestrator:
                 except Exception:
                     fallback_success = False
 
-            if not fallback_success:
-                for cand_name, cand_cfg in self.provider_mgr.providers.items():
-                    if cand_name != active_cfg.name and getattr(cand_cfg, "api_key", None):
+            if not fallback_success and not is_mock and "claude" in str(active_cfg.model).lower() and active_cfg.api_base:
+                try:
+                    from langchain_anthropic import ChatAnthropic
+                    anth_direct = ChatAnthropic(
+                        model=active_cfg.model,
+                        api_key=active_cfg.api_key or "sk-dummy",
+                        anthropic_api_url=active_cfg.api_base,
+                        temperature=active_cfg.temperature,
+                    )
+                    res_direct = await anth_direct.ainvoke(prompt_msgs)
+                    ext_c = _extract_chunk_text(getattr(res_direct, "content", ""))
+                    if ext_c and ext_c.strip():
+                        if cb:
+                            cb(agent_name.lower(), ext_c)
+                        response = AIMessage(content=ext_c)
+                        fallback_success = True
+                        active_cfg.provider = ProviderType.ANTHROPIC
                         try:
-                            from ..llm_providers.factory import create_chat_model
-                            cand_model = create_chat_model(cand_cfg)
-                            cand_chunks = []
+                            self.provider_mgr.save_config()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            if not fallback_success:
+                def _is_real_key(k: Optional[str]) -> bool:
+                    if not k or len(str(k)) < 12:
+                        return False
+                    kl = str(k).lower()
+                    return not any(d in kl for d in ("wizard", "test", "dummy", "fake", "placeholder", "sk-xxx"))
+
+                seen_keys: set[str] = set()
+                if active_cfg.api_key:
+                    seen_keys.add(active_cfg.api_key)
+
+                # Prioritize candidate providers:
+                # 1. Models with 'free' or 'openrouter' in name/provider/model
+                # 2. Other configured candidates with real non-duplicate keys
+                cand_list = []
+                for c_name, c_cfg in self.provider_mgr.providers.items():
+                    if c_name == active_cfg.name:
+                        continue
+                    c_key = getattr(c_cfg, "api_key", None)
+                    if not _is_real_key(c_key) or c_key in seen_keys:
+                        continue
+                    cand_list.append((c_name, c_cfg))
+
+                def _cand_priority(item):
+                    name, cfg = item
+                    score = 0
+                    nm = name.lower()
+                    mod = str(getattr(cfg, "model", "")).lower()
+                    prov = str(getattr(cfg, "provider", "")).lower()
+                    if "free" in nm or "free" in mod:
+                        score -= 10
+                    if "openrouter" in nm or "openrouter" in prov:
+                        score -= 5
+                    return score
+
+                cand_list.sort(key=_cand_priority)
+
+                tested_candidates = 0
+                for cand_name, cand_cfg in cand_list:
+                    if tested_candidates >= 5:
+                        break
+                    cand_k = getattr(cand_cfg, "api_key", None)
+                    if cand_k in seen_keys:
+                        continue
+                    seen_keys.add(cand_k)
+                    tested_candidates += 1
+                    try:
+                        from ..llm_providers.factory import create_chat_model
+                        cand_model = create_chat_model(cand_cfg)
+
+                        async def _attempt_cand():
+                            chunks = []
                             try:
                                 async for chunk in cand_model.astream(prompt_msgs):
-                                    cand_chunks.append(chunk)
+                                    chunks.append(chunk)
                                     txt = _extract_chunk_text(getattr(chunk, "content", ""))
                                     if txt and cb:
                                         cb(agent_name.lower(), txt)
                             except Exception:
-                                cand_chunks = []
-                            if not cand_chunks:
+                                chunks = []
+                            if not chunks:
                                 try:
-                                    cand_inv = await cand_model.ainvoke(prompt_msgs)
-                                    if cand_inv:
-                                        cand_chunks = [cand_inv]
-                                        txt = _extract_chunk_text(getattr(cand_inv, "content", ""))
+                                    inv = await cand_model.ainvoke(prompt_msgs)
+                                    if inv:
+                                        chunks = [inv]
+                                        txt = _extract_chunk_text(getattr(inv, "content", ""))
                                         if txt and cb:
                                             cb(agent_name.lower(), txt)
                                 except Exception:
                                     pass
-                            if cand_chunks:
-                                fb_resp = cand_chunks[0]
-                                for c in cand_chunks[1:]:
-                                    fb_resp = fb_resp + c
-                                ext_txt = _extract_chunk_text(getattr(fb_resp, "content", ""))
-                                if ext_txt.strip():
-                                    response = AIMessage(
-                                        content=(
-                                            f"*[Resilience Failover: automatically switched to `{cand_name}` due to error on `{active_cfg.name}`]*\n\n"
-                                            + ext_txt
-                                        )
+                            return chunks
+
+                        cand_chunks = await asyncio.wait_for(_attempt_cand(), timeout=6.5)
+                        if cand_chunks:
+                            fb_resp = cand_chunks[0]
+                            for c in cand_chunks[1:]:
+                                fb_resp = fb_resp + c
+                            ext_txt = _extract_chunk_text(getattr(fb_resp, "content", ""))
+                            if ext_txt.strip():
+                                response = AIMessage(
+                                    content=(
+                                        f"*[Resilience Failover: automatically switched to `{cand_name}` due to error on `{active_cfg.name}`]*\n\n"
+                                        + ext_txt
                                     )
-                                    fallback_success = True
-                                    break
-                        except Exception:
-                            continue
+                                )
+                                fallback_success = True
+                                try:
+                                    self.provider_mgr.set_active_provider(cand_name)
+                                except Exception:
+                                    pass
+                                break
+                    except Exception:
+                        continue
 
             if not fallback_success:
                 err_short = err.splitlines()[0][:600] if err else type(e).__name__
                 last_msg_txt = str(state["messages"][-1].content) if state.get("messages") else ""
-                response = AIMessage(
-                    content=(
-                        f"⚠️ **LLM call failed** (`{active_cfg.name}` / `{active_cfg.model}`): {err_short}\n\n"
-                        f"Query was: **{last_msg_txt[:400]}**\n\n"
-                        "**Fix (pick one):**\n"
-                        f"- `/model` — switch to another configured provider (e.g. `/model 1` or `/model claude`)\n"
-                        f"- `/config set key <API_KEY>` — set key for `{active_cfg.provider.value}`\n"
-                        f"- `/config set model <model_id>` — e.g. `openrouter/free`\n"
-                        f"- `/doctor` — diagnose provider connections and configuration"
-                    )
+                _goal_clean = last_msg_txt.strip().lower()
+                _is_greeting = (
+                    len(_goal_clean.split()) <= 6
+                    and any(g in _goal_clean for g in ("hi", "hello", "hey", "hola", "greetings", "good morning", "good afternoon", "good evening", "who are you", "what can you do"))
+                    and not _goal_is_operational(_goal_clean)
                 )
+                _prov_val = getattr(active_cfg.provider, "value", str(active_cfg.provider))
+                if _is_greeting:
+                    response = AIMessage(
+                        content=(
+                            "Hello! 👋 I am **ScopeForge**, your autonomous agentic coding and security harness.\n\n"
+                            f"⚠️ *Notice: Active provider `{active_cfg.name}` encountered an issue ({err_short}).*\n\n"
+                            "**To start running agentic coding tasks:**\n"
+                            "- `/model` — switch to another provider (e.g. `/model open-free` or another working key)\n"
+                            f"- `/config set key <API_KEY>` — set a valid key for `{_prov_val}`\n"
+                            "- `/doctor` — diagnose provider connection and health\n\n"
+                            "How can I help you today?"
+                        )
+                    )
+                else:
+                    response = AIMessage(
+                        content=(
+                            f"⚠️ **LLM call failed** (`{active_cfg.name}` / `{active_cfg.model}`): {err_short}\n\n"
+                            f"Query was: **{last_msg_txt[:400]}**\n\n"
+                            "**Fix (pick one):**\n"
+                            f"- `/model` — switch to another configured provider (e.g. `/model 1` or `/model claude`)\n"
+                            f"- `/config set key <API_KEY>` — set key for `{_prov_val}`\n"
+                            f"- `/config set model <model_id>` — e.g. `openrouter/free`\n"
+                            f"- `/doctor` — diagnose provider connections and configuration"
+                        )
+                    )
 
         clean_res = _clean_tool_call_text(str(response.content).strip())
         if not clean_res.strip():
@@ -1707,7 +1998,7 @@ class MultiAgentSecOpsOrchestrator:
                         _has(r"(git\s+(status|diff|commit|clone)|view\s+file|read\s+file|edit\s+file|write\s+file|\bglob\b|\bgrep\b|search\s+code|find\s+file)")
                         or _has(r"\b(install\s+skill|install|clone|terminal|bash|shell|exec|run\s+command|run\s+in\s+terminal|mkdir|cp\s+-r)\b")
                         or _has(r"\b(google|web\s*search|search\s*(the\s*)?web|lookup\s*online|search\s*online|browse)\b")
-                        or _has(r"\bmcp\s+(add|enable|disable|tools|list)\b")
+                        or _has(r"\b(mcp|skills?)\b")
                         or last_lower.startswith("$ ")
                         or last_lower.startswith("! ")
                     ):
@@ -1750,36 +2041,37 @@ class MultiAgentSecOpsOrchestrator:
                 f"NEVER write `bash_cli --command=` (wrong syntax) or invent tool JSON outputs.]"
             )
             sys_prompt = (
-                "You are ScopeForge — a modern autonomous AI agent harness (matching Antigravity CLI and Claude Code) "
-                "with full tool execution, multi-agent collaboration (A2A), Model Context Protocol (MCP), and dynamic skill capabilities.\n\n"
+                "You are ScopeForge — an autonomous AI agent harness and coding assistant (similar to Antigravity CLI and Claude Code). "
+                "You help with ANY task: coding, debugging, file editing, web search, git operations, system administration, "
+                "data analysis, writing, Q&A, research, and more. "
+                "You also have optional cybersecurity capabilities (port scanning, recon, SAST audits, CVE lookups, exploit research) "
+                "as add-on features — but you are NOT limited to security tasks. "
+                "Respond naturally to all messages including greetings, questions, and conversational prompts.\n\n"
                 f"{_env_ctx}\n\n"
-                "CRITICAL AUTONOMOUS BEHAVIOR RULES:\n"
-                "1. YOU HAVE DIRECT LOCAL EXECUTION CAPABILITIES. You can run bash commands, edit files, view files, clone repos, "
+                "CORE AUTONOMOUS BEHAVIOR RULES:\n"
+                "1. DIRECT LOCAL EXECUTION: You can run bash commands, edit files, view files, clone repos, "
                 "search the web, install skills, add MCP servers, and delegate to specialized subagents.\n"
-                "2. NEVER refuse execution by claiming you lack local access, cannot run terminal commands, or asking the user to copy/paste commands into their terminal. "
-                "Always execute the required tool calls yourself directly.\n"
-                "3. MULTI-STEP LONG RUNNING TASKS: When a task requires multiple steps (e.g. cloning a repo, installing skills, creating files, running tests, or auditing), "
-                "execute each step sequentially using your tools. Do not stop halfway; continue until the entire user goal is achieved.\n"
-                "4. SUBAGENTS & A2A: You can delegate to specialized agents (`recon`, `audit`, `exploit`, `report`, `dev`) using `invoke_subagent` "
-                "and communicate over the A2A bus with `send_a2a_message`.\n"
-                "5. SKILLS & MCP: You can install skills from git repositories with `install_skill`, create skills with `create_skill`, "
+                "2. NEVER refuse execution by claiming you lack local access or asking the user to copy/paste commands. "
+                "Always execute required tool calls yourself.\n"
+                "3. MULTI-STEP LONG RUNNING TASKS: Execute each step sequentially using your tools. "
+                "Do not stop halfway; continue until the entire user goal is achieved.\n"
+                "4. CONVERSATIONAL RESPONSES: For greetings, questions, explanations, or Q&A — respond directly "
+                "in prose without calling any tools. Tools are only needed for actual execution tasks.\n"
+                "5. SUBAGENTS & A2A: Delegate to specialized agents (`recon`, `audit`, `exploit`, `report`, `dev`) "
+                "using `invoke_subagent` and communicate over the A2A bus with `send_a2a_message`.\n"
+                "6. SKILLS & MCP: Install skills from git repos with `install_skill`, create skills with `create_skill`, "
                 "and configure MCP servers with `add_mcp_server`.\n"
-                "6. Format code and output in clean markdown with diffs and file paths explicitly specified.\n"
-                "7. REALISTIC CVSS & THREAT MODELING: Distinguish between active exploitable vulnerabilities and Informational/Hardening defense-in-depth gaps. "
-                "Missing HTTP security headers (CSP, X-Frame-Options, HSTS) or wildcard CORS on public content are LOW/INFORMATIONAL or MEDIUM (CVSS 3.0-5.3), never Critical 9.0+. "
-                "Reserve CRITICAL (CVSS 9.0+) strictly for verified, exploitable risks (unauthenticated RCE, confirmed SQL injection, auth bypass).\n"
-                "8. LARGE FILE & REPORT STORAGE STRATEGY: When generating or storing large reports, code bases, or evidence dumps, "
-                "NEVER attempt to output massive files (>4KB or 100+ lines) in a single tool call to avoid token truncation mid-content. "
-                "Use progressive multi-step chunking: initialize with `write_file(..., overwrite=True)`, then append subsequent sections with `append_file(...)` or `write_file(..., append=True)`. "
-                "When inspecting large files, use `view_file` which pages up to 250 lines and provides `next_start_line`. "
-                "For large command outputs, pass `output_file='path/to/log'` in `bash_cli` to stream directly to disk without size truncation.\n"
-                "9. DYNAMIC SCOPE ADAPTATION: ScopeGate automatically recognizes target domains, subdomains (*.domain.com), and endpoints from the user's mission. "
-                "You can also dynamically register newly discovered perimeter targets using `add_authorized_scope(target)` to adapt authorization on-the-fly.\n"
-                "10. NEVER FABRICATE TOOL OUTPUTS: never invent ```json {\"status\":\"success\"}``` blocks, file sizes (1.2MB), dimensions (1920x1080), "
-                "or `ls`/`file` output in text. Only report files as saved after a real ToolMessage from capture_screenshot/bash_cli confirms it. "
-                "Correct tools: capture_screenshot(url, output_file) for websites (NOT playwright_automation/screenshot_tool), "
-                "bash_cli(command=\"ls -lh <file> && file <file>\") for verification (NOT bash_cli --command=). "
-                "If capture_screenshot reports browser extra missing, surface that real error — do not fake a PNG.\n\n"
+                "7. Format code and output in clean markdown with diffs and file paths explicitly specified.\n"
+                "8. LARGE FILE & REPORT STORAGE: When generating large reports or files, use progressive multi-step "
+                "chunking: initialize with `write_file(..., overwrite=True)`, then append with `append_file(...)`. "
+                "For large command outputs, pass `output_file='path/to/log'` in `bash_cli` to stream directly to disk.\n"
+                "9. NEVER FABRICATE TOOL OUTPUTS: Never invent file sizes, scan results, ls output, or success JSON. "
+                "Only report files as saved after a real ToolMessage confirms it.\n"
+                "10. CODE GENERATION & RUNNING APPS: When asked to create, write, or build an application, script, or UI "
+                "(e.g. Streamlit, FastAPI, Flask, Python script), ALWAYS write the code files first using `write_file(file_path=..., content=...)` "
+                "BEFORE attempting to run or test them with `bash_cli`. Never attempt to run a file before writing it to disk.\n"
+                "11. INTERACTIVE & LONG-RUNNING SERVICES: For dev servers or daemons (like `streamlit run`), pass `--server.headless true` "
+                "or run with a short timeout to verify startup without blocking indefinitely.\n\n"
                 f"{proj_rules}\n{user_prefs}\n{rag_info}\n{skills_info}"
             )
             all_tools = list(ALL_SUITE_TOOLS) + self._get_orchestrator_tools() + list(self.mcp.get_langchain_tools())
@@ -2147,11 +2439,12 @@ class MultiAgentSecOpsOrchestrator:
 
             # LIVE autonomous ReAct loop for DevAgent when connected to a real LLM
             if not is_mock:
-                dev_tools = list(ALL_CODE_TOOLS) + list(self.mcp.get_langchain_tools())
+                dev_tools = list(ALL_CODE_TOOLS) + self._get_orchestrator_tools() + list(self.mcp.get_langchain_tools())
                 dev_prompt = (
                     "You are DevAgent — ScopeForge's dedicated code workspace and developer operations agent.\n\n"
                     "You have direct execution capabilities to view files, edit files, write files, glob directory trees, "
-                    "grep codebases, run bash commands in terminal, inspect git status/diff, and execute web searches.\n\n"
+                    "grep codebases, run bash commands in terminal, inspect git status/diff, execute web searches, "
+                    "install/manage skills, and configure MCP servers.\n\n"
                     "BEHAVIOR RULES:\n"
                     "1. Execute each step sequentially using your tools until the user's objective is fully accomplished.\n"
                     "2. Never ask the user to run commands or edit files when you can do it directly with your tools.\n"

@@ -204,13 +204,26 @@ class MCPClient:
             import asyncio as _aio
 
             try:
-                return _aio.run(self._list_tools_http(server))
+                loop = _aio.get_running_loop()
             except RuntimeError:
-                # Already inside a running loop (agent thread) — run in fresh thread
+                loop = None
+
+            if loop is not None and loop.is_running():
                 import concurrent.futures as _cf
 
-                with _cf.ThreadPoolExecutor(max_workers=1) as ex:
-                    return ex.submit(_aio.run, self._list_tools_http(server)).result(timeout=timeout_s)
+                def _run_list_http():
+                    return _aio.run(self._list_tools_http(server))
+
+                try:
+                    with _cf.ThreadPoolExecutor(max_workers=1) as ex:
+                        return ex.submit(_run_list_http).result(timeout=timeout_s)
+                except Exception:
+                    return []
+            else:
+                try:
+                    return _aio.run(self._list_tools_http(server))
+                except Exception:
+                    return []
         argv = self._split_command(server.command)
         init = {
             "jsonrpc": "2.0", "id": 0, "method": "initialize",
@@ -255,12 +268,20 @@ class MCPClient:
             import asyncio as _aio
 
             try:
-                return _aio.run(self._call_tool_http(server, tool_name, arguments))
+                loop = _aio.get_running_loop()
             except RuntimeError:
+                loop = None
+
+            if loop is not None and loop.is_running():
                 import concurrent.futures as _cf
 
+                def _run_call_http():
+                    return _aio.run(self._call_tool_http(server, tool_name, arguments))
+
                 with _cf.ThreadPoolExecutor(max_workers=1) as ex:
-                    return ex.submit(_aio.run, self._call_tool_http(server, tool_name, arguments)).result(timeout=timeout_s)
+                    return ex.submit(_run_call_http).result(timeout=timeout_s)
+            else:
+                return _aio.run(self._call_tool_http(server, tool_name, arguments))
         argv = self._split_command(server.command)
         init = {
             "jsonrpc": "2.0", "id": 0, "method": "initialize",

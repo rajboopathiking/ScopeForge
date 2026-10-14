@@ -1,7 +1,7 @@
 [project]
 name = "scopeforge"
-version = "0.1.20"
-description = "ScopeForge — Commercial-Grade Cybersecurity Multi-Agent Harness & Claude Code/AGY Interactive CLI"
+version = "0.1.24"
+description = "ScopeForge — Autonomous Agent Harness & Commercial-Grade Coding Assistant with Advanced Cybersecurity Swarms"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }

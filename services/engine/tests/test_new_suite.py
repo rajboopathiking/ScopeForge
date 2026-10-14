@@ -1230,5 +1230,460 @@ async def test_no_generation_chunks_fallback_to_unbound_and_ainvoke():
     assert "Hello from non-streaming ainvoke fallback!" in str(last_msg2.content)
 
 
+@pytest.mark.asyncio
+async def test_claude_custom_endpoint_cross_protocol_recovery(monkeypatch):
+    """Verify that when a custom Claude proxy fails on ChatOpenAI (e.g. Cloudflare WAF 403 / empty chunks),
+    ScopeForge automatically recovers via the native Anthropic protocol."""
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.tools import StructuredTool
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator
+    from scopeforge_engine.agents.state import AgentState
+    import langchain_anthropic
+
+    orch = MultiAgentSecOpsOrchestrator()
+    orch.set_mode("live")
+
+    # Mock failing ChatOpenAI
+    class FailingOpenAIModel:
+        def bind_tools(self, tools):
+            return self
+
+        async def astream(self, messages):
+            raise ValueError("No generation chunks were returned")
+
+        async def ainvoke(self, messages):
+            raise ValueError("No generation chunks were returned")
+
+    # Mock succeeding ChatAnthropic
+    class MockAnthropicModel:
+        def __init__(self, **kwargs):
+            pass
+
+        async def astream(self, messages):
+            yield AIMessage(content="Hello via Anthropic native protocol fallback!")
+
+        async def ainvoke(self, messages):
+            return AIMessage(content="Hello via Anthropic native protocol fallback!")
+
+    monkeypatch.setattr(langchain_anthropic, "ChatAnthropic", MockAnthropicModel)
+
+    orch.provider_mgr.get_chat_model = lambda: FailingOpenAIModel()
+    orch.provider_mgr.get_active_config = lambda: type("C", (), {
+        "provider": "custom",
+        "model": "claude-opus-4-8",
+        "name": "claude-justwork",
+        "api_key": "sk-real-test-key-12345",
+        "api_base": "https://api.justwoker.icu",
+        "temperature": 0.2,
+    })()
+
+    dummy_tool = StructuredTool.from_function(func=lambda x="": "ok", name="dummy", description="dummy tool")
+
+    state = AgentState(
+        messages=[HumanMessage(content="hi")],
+        active_agent="supervisor",
+        next_step="supervisor",
+        scope=["*"],
+        findings=[],
+        a2a_log=[],
+        max_iterations=5,
+    )
+
+    res = await orch._execute_react_agent_loop(
+        agent_name="supervisor",
+        system_prompt="You are supervisor.",
+        tools=[dummy_tool],
+        state=state,
+        max_iterations=5,
+    )
+    last_msg = res["messages"][-1]
+    assert "Anthropic native protocol fallback" in str(last_msg.content)
+
+
+def test_xml_tool_calling_and_mcp_normalization():
+    from langchain_core.messages import AIMessage
+    from scopeforge_engine.agents.graph import _extract_tool_calls, _normalize_tool_call, _clean_tool_call_text
+
+    tool_map = {
+        "bash_cli": None,
+        "list_mcp_servers": None,
+        "add_mcp_server": None,
+        "list_skills": None,
+        "install_skill": None,
+        "create_skill": None,
+    }
+
+    # 1. XML with <function=NAME><parameter=KEY>VAL</parameter></function>
+    msg1 = AIMessage(content="""I'll check if Playwright is installed.
+<tool_call>
+<function=bash>
+<parameter=command>
+python3 -c "import playwright; print('installed')"
+</parameter>
+</function>
+</tool_call>""")
+    calls1 = _extract_tool_calls(msg1, tool_map)
+    assert len(calls1) == 1
+    assert calls1[0]["name"] == "bash_cli"
+    assert "import playwright" in calls1[0]["args"]["command"]
+
+    # 2. Standalone <function=...> without <tool_call> wrapper
+    msg2 = AIMessage(content="""<function=bash><parameter=command>which npx</parameter></function>""")
+    calls2 = _extract_tool_calls(msg2, tool_map)
+    assert len(calls2) == 1
+    assert calls2[0]["name"] == "bash_cli"
+    assert calls2[0]["args"]["command"] == "which npx"
+
+    # 3. Bare tool call: <tool_call>list_mcp_servers</tool_call>
+    msg3 = AIMessage(content="""Let me check MCP servers:<tool_call>list_mcp_servers</tool_call>""")
+    calls3 = _extract_tool_calls(msg3, tool_map)
+    assert len(calls3) == 1
+    assert calls3[0]["name"] == "list_mcp_servers"
+    assert calls3[0]["args"] == {}
+
+    # 4. Bare tool call with parentheses: <tool_call>list_mcp_servers()</tool_call>
+    msg4 = AIMessage(content="""<tool_call>list_mcp_servers()</tool_call>""")
+    calls4 = _extract_tool_calls(msg4, tool_map)
+    assert len(calls4) == 1
+    assert calls4[0]["name"] == "list_mcp_servers"
+
+    # 5. Markdown fenced JSON inside <tool_call>
+    msg5 = AIMessage(content="""<tool_call>
+```json
+{
+  "name": "add_mcp_server",
+  "arguments": {
+    "server_name": "playwright",
+    "cmd": "npx -y @modelcontextprotocol/server-playwright"
+  }
+}
+```
+</tool_call>""")
+    calls5 = _extract_tool_calls(msg5, tool_map)
+    assert len(calls5) == 1
+    assert calls5[0]["name"] == "add_mcp_server"
+    assert calls5[0]["args"]["name"] == "playwright"
+    assert "npx" in calls5[0]["args"]["command"]
+
+    # 6. Alias normalization: check_mcp, mcp_status, skills_list
+    n1, _ = _normalize_tool_call("check_mcp", {}, tool_map)
+    assert n1 == "list_mcp_servers"
+    n2, _ = _normalize_tool_call("mcp_status", {}, tool_map)
+    assert n2 == "list_mcp_servers"
+    n3, _ = _normalize_tool_call("skills_list", {}, tool_map)
+    assert n3 == "list_skills"
+
+    # 7. Cleaning markup text
+    dirty = "Checking servers... <tool_call><function=bash><parameter=command>ls</parameter></function></tool_call> Done!"
+    cleaned = _clean_tool_call_text(dirty)
+    assert "<tool_call>" not in cleaned
+    assert "<function" not in cleaned
+    assert "Checking servers..." in cleaned
+    assert "Done!" in cleaned
+
+
+@pytest.mark.asyncio
+async def test_xml_function_tag_multistep_loop():
+    """Verify that models emitting <function=...> XML tags execute sequentially through multi-step loops."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langchain_core.tools import StructuredTool
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator
+    from scopeforge_engine.agents.state import AgentState
+
+    orch = MultiAgentSecOpsOrchestrator()
+    orch.set_mode("live")
+    executed_tools = []
+
+    def _mock_bash(command: str) -> str:
+        executed_tools.append(f"bash:{command}")
+        return "/usr/local/bin/npx"
+
+    def _mock_add_mcp(name: str, command: str) -> str:
+        executed_tools.append(f"mcp:{name}:{command}")
+        return json.dumps({"status": "SUCCESS", "message": f"Server {name} added"})
+
+    t_bash = StructuredTool.from_function(func=_mock_bash, name="bash_cli", description="Run command")
+    t_mcp = StructuredTool.from_function(func=_mock_add_mcp, name="add_mcp_server", description="Add MCP server")
+
+    class MockXmlModel:
+        def bind_tools(self, tools):
+            return self
+
+        async def astream(self, messages):
+            tool_msg_count = sum(1 for m in messages if isinstance(m, ToolMessage) or (isinstance(m, HumanMessage) and "Tool Observation" in str(getattr(m, "content", ""))))
+            if tool_msg_count == 0:
+                yield AIMessage(content="""I'll check if npx is available.
+<tool_call>
+<function=bash>
+<parameter=command>
+which npx
+</parameter>
+</function>
+</tool_call>""")
+            elif tool_msg_count == 1:
+                yield AIMessage(content="""npx is available at /usr/local/bin/npx. Now adding Playwright MCP:
+<tool_call>
+<function=add_mcp>
+<parameter=name>
+playwright
+</parameter>
+<parameter=command>
+npx -y @modelcontextprotocol/server-playwright
+</parameter>
+</function>
+</tool_call>""")
+            else:
+                yield AIMessage(content="Playwright MCP has been successfully installed and registered via autonomous multi-step loop.")
+
+    orch.provider_mgr.get_chat_model = lambda: MockXmlModel()
+    orch.provider_mgr.get_active_config = lambda: type("C", (), {"provider": "mock", "model": "mock-xml", "name": "mock"})()
+
+    state = AgentState(
+        messages=[HumanMessage(content="Add playwright mcp tool")],
+        active_agent="supervisor",
+        next_step="supervisor",
+        scope=["*"],
+        findings=[],
+        a2a_log=[],
+        max_iterations=10,
+    )
+
+    res = await orch._execute_react_agent_loop(
+        agent_name="supervisor",
+        system_prompt="You are ScopeForge supervisor.",
+        tools=[t_bash, t_mcp],
+        state=state,
+        max_iterations=10,
+    )
+
+    assert len(executed_tools) == 2
+    assert executed_tools[0] == "bash:which npx"
+    assert "playwright" in executed_tools[1]
+    last_content = str(res["messages"][-1].content)
+    assert "Playwright MCP has been successfully installed" in last_content
+
+@pytest.mark.asyncio
+async def test_conversational_greeting_graceful_resilience(tmp_path):
+    """Verify that when all providers fail, conversational greetings ('hi') degrade gracefully to a helpful welcome."""
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator, AgentState
+    from scopeforge_engine.llm_providers.manager import ProviderManager, LLMConfig, ProviderType
+    from langchain_core.messages import HumanMessage
+    from unittest.mock import MagicMock
+
+    cfg_dir = tmp_path / ".scopeforge"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    pm = ProviderManager(config_dir=cfg_dir)
+    pm.providers.clear()
+    pm.register_provider(LLMConfig(
+        name="failing-groq",
+        provider=ProviderType.GROQ,
+        model="llama-3.3-70b-versatile",
+        api_key=None,
+    ))
+    pm.set_active_provider("failing-groq")
+
+    orch = MultiAgentSecOpsOrchestrator(provider_manager=pm)
+
+    # Mock failing model
+    class BrokenModel:
+        async def astream(self, msgs):
+            raise RuntimeError("Error code: 401 - {'error': {'message': 'Invalid API Key'}}")
+            yield
+        async def ainvoke(self, msgs):
+            raise RuntimeError("Error code: 401 - {'error': {'message': 'Invalid API Key'}}")
+
+    orch.provider_mgr.get_chat_model = MagicMock(return_value=BrokenModel())
+
+    state = AgentState(
+        messages=[HumanMessage(content="hi")],
+        active_agent="supervisor",
+        next_step="supervisor",
+        scope=["*"],
+        findings=[],
+        a2a_log=[],
+        max_iterations=3,
+    )
+
+    res = await orch._execute_react_agent_loop(
+        agent_name="supervisor",
+        system_prompt="You are supervisor.",
+        tools=[],
+        state=state,
+        max_iterations=3,
+    )
+    last_msg = str(res["messages"][-1].content)
+    assert "Hello! 👋 I am **ScopeForge**" in last_msg
+    assert "failing-groq" in last_msg
+    assert "/model" in last_msg
+
+
+@pytest.mark.asyncio
+async def test_mcp_sync_discovery_under_running_loop(tmp_path):
+    """Verify that list_tools_sync on an HTTP server does not produce unawaited coroutine warnings when called in an event loop."""
+    from scopeforge_engine.mcp import MCPClient, MCPRegistry, MCPServer
+
+    reg = MCPRegistry(home=tmp_path)
+    client = MCPClient(reg)
+
+    server = MCPServer(
+        name="test-http-server",
+        command="http://localhost:59999/mcp",
+        enabled=True,
+    )
+
+    # Calling list_tools_sync from inside this async test (running event loop)
+    tools = client.list_tools_sync(server, timeout_s=0.5)
+    assert tools == []
+
+
+@pytest.mark.asyncio
+async def test_candidate_failover_deduplication_and_switch(tmp_path):
+    """Verify that when the active provider fails, Orchestrator fails over to candidate with valid key and sets it active."""
+    from scopeforge_engine.agents.graph import MultiAgentSecOpsOrchestrator, AgentState
+    from scopeforge_engine.llm_providers.manager import ProviderManager, LLMConfig, ProviderType
+    from langchain_core.messages import HumanMessage, AIMessage
+    from unittest.mock import MagicMock, patch
+
+    cfg_dir = tmp_path / ".scopeforge"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    pm = ProviderManager(config_dir=cfg_dir)
+    pm.providers.clear()
+    pm.register_provider(LLMConfig(
+        name="failing-active",
+        provider=ProviderType.GROQ,
+        model="llama-3.3-70b-versatile",
+        api_key=None,
+    ))
+    # Add duplicate broken key configs
+    pm.register_provider(LLMConfig(
+        name="dead-cand-1",
+        provider=ProviderType.OPENROUTER,
+        model="openrouter/free",
+        api_key="sk-or-v1-broken-key-1234567890",
+    ))
+    pm.register_provider(LLMConfig(
+        name="dead-cand-2",
+        provider=ProviderType.OPENROUTER,
+        model="openrouter/free",
+        api_key="sk-or-v1-broken-key-1234567890",  # Duplicate key! Should be skipped without duplicate attempt
+    ))
+    # Working candidate
+    pm.register_provider(LLMConfig(
+        name="working-cand",
+        provider=ProviderType.OPENROUTER,
+        model="openrouter/free",
+        api_key="sk-or-v1-working-key-9999999999",
+    ))
+    pm.set_active_provider("failing-active")
+
+    orch = MultiAgentSecOpsOrchestrator(provider_manager=pm)
+
+    # Active model always fails
+    class ActiveFailModel:
+        async def astream(self, msgs):
+            raise RuntimeError("401 Invalid Key")
+            yield
+        async def ainvoke(self, msgs):
+            raise RuntimeError("401 Invalid Key")
+
+    orch.provider_mgr.get_chat_model = MagicMock(return_value=ActiveFailModel())
+
+    # Candidate model mock factory
+    def mock_create_chat_model(cfg):
+        cand = MagicMock()
+        if "working" in cfg.name:
+            async def _cand_stream(msgs):
+                yield AIMessage(content="Working candidate response!")
+            async def _cand_inv(msgs):
+                return AIMessage(content="Working candidate response!")
+            cand.astream = _cand_stream
+            cand.ainvoke = _cand_inv
+        else:
+            async def _dead_stream(msgs):
+                raise RuntimeError("429 rate limit")
+                yield
+            async def _dead_inv(msgs):
+                raise RuntimeError("429 rate limit")
+            cand.astream = _dead_stream
+            cand.ainvoke = _dead_inv
+        return cand
+
+    with patch("scopeforge_engine.llm_providers.factory.create_chat_model", side_effect=mock_create_chat_model):
+        state = AgentState(
+            messages=[HumanMessage(content="Explain what ScopeForge does")],
+            active_agent="supervisor",
+            next_step="supervisor",
+            scope=["*"],
+            findings=[],
+            a2a_log=[],
+            max_iterations=3,
+        )
+
+        res = await orch._execute_react_agent_loop(
+            agent_name="supervisor",
+            system_prompt="You are supervisor.",
+            tools=[],
+            state=state,
+            max_iterations=3,
+        )
+        last_msg = str(res["messages"][-1].content)
+        assert "Working candidate response!" in last_msg
+        assert "Resilience Failover: automatically switched to `working-cand`" in last_msg
+        # Verify active provider was switched to working-cand
+        assert pm.active_provider_name == "working-cand"
+
+
+def test_arg_key_xml_extraction():
+    """Verify that 'Invoking tool: <tool><arg_key>KEY</arg_key><arg_value>VAL</arg_value>' is extracted and cleaned."""
+    from langchain_core.messages import AIMessage
+    from scopeforge_engine.agents.graph import _extract_tool_calls, _clean_tool_call_text
+
+    tool_map = {"bash_cli": None}
+    raw = (
+        "Let me start the application.\n"
+        "Invoking tool: bash_cli<arg_key>command</arg_key><arg_value>streamlit run chatbot_ui.py</arg_value>"
+        "<arg_key>timeout</arg_key><arg_value>120</arg_value></tool_call>"
+    )
+    msg = AIMessage(content=raw)
+    calls = _extract_tool_calls(msg, tool_map)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "bash_cli"
+    assert calls[0]["args"]["command"] == "streamlit run chatbot_ui.py"
+    assert calls[0]["args"]["timeout"] == "120"
+
+    cleaned = _clean_tool_call_text(raw)
+    assert "<arg_key>" not in cleaned
+    assert "Invoking tool:" not in cleaned
+    assert "streamlit run" not in cleaned
+    assert "Let me start the application." in cleaned
+
+
+def test_plan_mode_operator_approval_interruption():
+    """Verify that in PLAN mode, executing tools like bash_cli trigger ApprovalGate for human decision."""
+    from scopeforge_engine.middleware.approval import ApprovalGateMiddleware
+    from scopeforge_engine.middleware.base import ToolApprovalRequest
+
+    decisions = []
+
+    def mock_approval(req: ToolApprovalRequest) -> bool:
+        decisions.append(req.tool_name)
+        return False  # Deny approval
+
+    gate = ApprovalGateMiddleware(approval_callback=mock_approval, mode="plan")
+
+    # In PLAN mode: bash_cli should trigger approval
+    proceed, reason, _ = gate.before_tool("bash_cli", {"command": "streamlit run chatbot.py"}, {"agent": "Supervisor"})
+    assert not proceed
+    assert len(decisions) == 1
+    assert decisions[0] == "bash_cli"
+    assert "Operator DENIED approval" in reason
+
+    # When switched to LIVE mode: bash_cli should execute without approval
+    gate.set_mode("live")
+    proceed_live, reason_live, _ = gate.before_tool("bash_cli", {"command": "streamlit run chatbot.py"}, {"agent": "Supervisor"})
+    assert proceed_live
+    assert reason_live == ""
+    assert len(decisions) == 1  # No new approval prompted
+
 
 

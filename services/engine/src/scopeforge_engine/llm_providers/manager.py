@@ -289,7 +289,13 @@ class ProviderManager:
 
     def get_active_config(self) -> LLMConfig:
         """Return active LLMConfig."""
-        return self.providers.get(self.active_provider_name, self.providers["mock-secops"])
+        if self.active_provider_name in self.providers:
+            return self.providers[self.active_provider_name]
+        if "mock-secops" in self.providers:
+            return self.providers["mock-secops"]
+        if self.providers:
+            return next(iter(self.providers.values()))
+        return DEFAULT_PROVIDERS["mock-secops"]
 
     def set_active_provider(self, name: str) -> bool:
         """Switch the active provider."""
@@ -361,8 +367,10 @@ class ProviderManager:
             ptype = ProviderType.OLLAMA
         elif api_base and ("localhost:8000" in api_base or "vllm" in api_base.lower()):
             ptype = ProviderType.CUSTOM
+        elif "claude" in model.lower() and not ("openrouter" in str(api_base or "").lower() or "groq" in str(api_base or "").lower() or "apmix.ai" in str(api_base or "").lower()):
+            ptype = ProviderType.ANTHROPIC
         elif api_base:
-            # Custom proxy endpoints (apmix.ai, deepseek.com, together.xyz, etc.)
+            # Custom proxy endpoints (deepseek.com, together.xyz, etc.)
             # speak OpenAI-compatible /chat/completions protocol
             ptype = ProviderType.CUSTOM
         elif "openrouter" in model.lower():

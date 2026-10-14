@@ -363,12 +363,18 @@ def bash_cli(command: str, timeout: int = 120, output_file: Optional[str] = None
             }, indent=2)
 
     try:
+        env = os.environ.copy()
+        env["STREAMLIT_SERVER_HEADLESS"] = "true"
+        env["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+        env["CI"] = "true"
+        env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             command,
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=env,
             start_new_session=True if hasattr(os, "setsid") else False,
         )
         try:
